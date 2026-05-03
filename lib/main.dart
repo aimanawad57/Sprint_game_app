@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:nakama/nakama.dart' as nakama;
 
 const _googleServerClientId =
     '481929024343-f6ar478mu0uconqjospg3ijps85uavd1.apps.googleusercontent.com';
+const _nakamaHost = '10.0.2.2';
+const _nakamaGrpcPort = 7349;
+const _nakamaServerKey = 'defaultkey';
+const _nakamaUseSsl = false;
 
 void main() {
   runApp(const MyApp());
@@ -35,8 +40,14 @@ class _LoginScreenState extends State<LoginScreen> {
   // We save the Future so initialization starts once and can be awaited later.
   late final Future<void> _googleSignInReady;
 
+  // This client is how Flutter talks to the Nakama server.
+  late final nakama.NakamaBaseClient _nakamaClient;
+
   // Null means no user is signed in yet. After login, this holds the email.
   String? _signedInEmail;
+
+  // Null means Nakama login has not succeeded yet.
+  String? _nakamaUserId;
 
   // Used to disable the button while the login flow is already running.
   bool _isSigningIn = false;
@@ -49,6 +60,14 @@ class _LoginScreenState extends State<LoginScreen> {
     // The serverClientId is the Web Client ID from Google Cloud.
     _googleSignInReady = GoogleSignIn.instance.initialize(
       serverClientId: _googleServerClientId,
+    );
+
+    // Android emulator uses 10.0.2.2 to reach localhost on your computer.
+    _nakamaClient = nakama.getNakamaClient(
+      host: _nakamaHost,
+      grpcPort: _nakamaGrpcPort,
+      serverKey: _nakamaServerKey,
+      ssl: _nakamaUseSsl,
     );
   }
 
@@ -80,14 +99,34 @@ class _LoginScreenState extends State<LoginScreen> {
       final googleUser = await GoogleSignIn.instance.authenticate(
         scopeHint: const <String>['email', 'profile'],
       );
+      debugPrint('Google user email: ${googleUser.email}');
+      debugPrint('Google user display name: ${googleUser.displayName}');
+      debugPrint('Google user id: ${googleUser.id}');
+
+      // The ID token is proof from Google that this user signed in.
+      // Later, this is the kind of token we will send to Nakama.
+      final googleAuth = googleUser.authentication;
+      final idToken = googleAuth.idToken;
+
+      // Do not print the actual token because tokens are private.
+      debugPrint('Has Google ID token: ${idToken != null}');
+
+      if (idToken == null) {
+        throw Exception('Google ID token is missing');
+      }
+
+      final session = await _nakamaClient.authenticateGoogle(
+        token: idToken,
+      );
 
       // After an await, check that this screen still exists before using context
       // or setState.
       if (!mounted) return;
       setState(() {
         _signedInEmail = googleUser.email;
+        _nakamaUserId = session.userId;
       });
-      _showMessage('Signed in with Google as ${googleUser.email}');
+      _showMessage('Signed in to Nakama as ${googleUser.email}');
     } catch (error) {
       debugPrint('Login failed: $error');
       if (!mounted) return;
@@ -137,6 +176,12 @@ class _LoginScreenState extends State<LoginScreen> {
             // Only show this text after Google login gives us an email.
             if (_signedInEmail != null) ...[
               Text('Google user: $_signedInEmail'),
+              const SizedBox(height: 16),
+            ],
+
+            // Only show this text after Nakama creates/returns a session.
+            if (_nakamaUserId != null) ...[
+              Text('Nakama user id: $_nakamaUserId'),
               const SizedBox(height: 16),
             ],
 
