@@ -1,0 +1,14 @@
+{
+  "name": "sprint-nakama-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "nakama-runtime": "github:heroiclabs/nakama-common"
+  }
+}
+
