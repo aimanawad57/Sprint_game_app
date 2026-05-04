@@ -1,4 +1,4 @@
-const rpcHealthcheck: nkruntime.RpcFunction = function (
+function rpcHealthcheck(
   ctx: nkruntime.Context,
   logger: nkruntime.Logger,
   nk: nkruntime.Nakama,
@@ -9,15 +9,14 @@ const rpcHealthcheck: nkruntime.RpcFunction = function (
     service: "sprint-nakama",
     userId: ctx.userId || null
   });
-};
+}
 
-const InitModule: nkruntime.InitModule = function (
+function InitModule(
   ctx: nkruntime.Context,
   logger: nkruntime.Logger,
   nk: nkruntime.Nakama,
   initializer: nkruntime.Initializer
-) {
+): void {
   initializer.registerRpc("healthcheck", rpcHealthcheck);
   logger.info("Sprint Nakama runtime initialized.");
-};
-
+}

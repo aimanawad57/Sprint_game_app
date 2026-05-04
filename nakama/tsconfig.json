@@ -3,18 +3,19 @@
     "noImplicitReturns": true,
     "moduleResolution": "node",
     "esModuleInterop": true,
-    "noUnusedLocals": true,
+    "noUnusedLocals": false,
     "removeComments": true,
-    "target": "es5",
+    "target": "es2017",
     "lib": [
       "es2015"
     ],
-    "module": "ESNext",
+    "module": "none",
     "skipLibCheck": true,
     "strict": false,
     "typeRoots": [
       "./node_modules"
     ],
+    "rootDir": "src",
     "outDir": "build"
   },
   "files": [
