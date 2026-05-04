@@ -43,12 +43,6 @@ class _LoginScreenState extends State<LoginScreen> {
   // This client is how Flutter talks to the Nakama server.
   late final nakama.NakamaBaseClient _nakamaClient;
 
-  // Null means no user is signed in yet. After login, this holds the email.
-  String? _signedInEmail;
-
-  // Null means Nakama login has not succeeded yet.
-  String? _nakamaUserId;
-
   // Used to disable the button while the login flow is already running.
   bool _isSigningIn = false;
 
@@ -85,11 +79,11 @@ class _LoginScreenState extends State<LoginScreen> {
       _isSigningIn = true;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Starting Google login...'),
-      ),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Starting Google login...')));
+
+    var loginSucceeded = false;
 
     try {
       // Wait until Google Sign-In finished its one-time setup.
@@ -115,25 +109,30 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception('Google ID token is missing');
       }
 
-      final session = await _nakamaClient.authenticateGoogle(
-        token: idToken,
-      );
+      final session = await _nakamaClient.authenticateGoogle(token: idToken);
 
       // After an await, check that this screen still exists before using context
       // or setState.
       if (!mounted) return;
-      setState(() {
-        _signedInEmail = googleUser.email;
-        _nakamaUserId = session.userId;
-      });
-      _showMessage('Signed in to Nakama as ${googleUser.email}');
+      loginSucceeded = true;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (context) {
+            return MainPage(
+              email: googleUser.email,
+              displayName: googleUser.displayName ?? 'Player',
+              nakamaUserId: session.userId,
+            );
+          },
+        ),
+      );
     } catch (error) {
       debugPrint('Login failed: $error');
       if (!mounted) return;
       _showMessage('Login failed: $error');
     } finally {
       // This runs after success or failure, so the button becomes enabled again.
-      if (!mounted) return;
+      if (!mounted || loginSucceeded) return;
       setState(() {
         _isSigningIn = false;
       });
@@ -142,9 +141,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   void _showMessage(String message) {
     // SnackBar is a temporary message shown at the bottom of the screen.
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -156,34 +155,17 @@ class _LoginScreenState extends State<LoginScreen> {
           children: [
             const Text(
               'Sprint',
-              style: TextStyle(
-                fontSize: 36,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold),
             ),
 
             const SizedBox(height: 8),
 
             const Text(
               'Sign in to start playing',
-              style: TextStyle(
-                fontSize: 16,
-              ),
+              style: TextStyle(fontSize: 16),
             ),
 
             const SizedBox(height: 24),
-
-            // Only show this text after Google login gives us an email.
-            if (_signedInEmail != null) ...[
-              Text('Google user: $_signedInEmail'),
-              const SizedBox(height: 16),
-            ],
-
-            // Only show this text after Nakama creates/returns a session.
-            if (_nakamaUserId != null) ...[
-              Text('Nakama user id: $_nakamaUserId'),
-              const SizedBox(height: 16),
-            ],
 
             FilledButton(
               // null disables the button while login is running.
@@ -193,6 +175,93 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class MainPage extends StatelessWidget {
+  const MainPage({
+    super.key,
+    required this.email,
+    required this.displayName,
+    required this.nakamaUserId,
+  });
+
+  final String email;
+  final String displayName;
+  final String nakamaUserId;
+
+  void _showComingSoon(BuildContext context, String featureName) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('$featureName will be added later')));
+  }
+
+  Future<void> _signOut(BuildContext context) async {
+    await GoogleSignIn.instance.signOut();
+
+    if (!context.mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) {
+          return const LoginScreen();
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Sprint'),
+        actions: [
+          IconButton(
+            tooltip: 'Sign out',
+            onPressed: () => _signOut(context),
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Welcome, $displayName',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 8),
+              Text(email),
+              const SizedBox(height: 8),
+              Text(
+                'Nakama user id: $nakamaUserId',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 32),
+              FilledButton.icon(
+                onPressed: () => _showComingSoon(context, 'Play'),
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Play'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () => _showComingSoon(context, 'Leaderboard'),
+                icon: const Icon(Icons.leaderboard),
+                label: const Text('Leaderboard'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () => _showComingSoon(context, 'Profile'),
+                icon: const Icon(Icons.person),
+                label: const Text('Profile'),
+              ),
+            ],
+          ),
         ),
       ),
     );
