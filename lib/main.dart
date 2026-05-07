@@ -121,7 +121,8 @@ class _LoginScreenState extends State<LoginScreen> {
             return MainPage(
               email: googleUser.email,
               displayName: googleUser.displayName ?? 'Player',
-              nakamaUserId: session.userId,
+              nakamaClient: _nakamaClient,
+              nakamaSession: session,
             );
           },
         ),
@@ -132,10 +133,11 @@ class _LoginScreenState extends State<LoginScreen> {
       _showMessage('Login failed: $error');
     } finally {
       // This runs after success or failure, so the button becomes enabled again.
-      if (!mounted || loginSucceeded) return;
-      setState(() {
-        _isSigningIn = false;
-      });
+      if (mounted && !loginSucceeded) {
+        setState(() {
+          _isSigningIn = false;
+        });
+      }
     }
   }
 
@@ -181,17 +183,55 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-class MainPage extends StatelessWidget {
+enum BackendStatus { checking, connected, failed }
+
+class MainPage extends StatefulWidget {
   const MainPage({
     super.key,
     required this.email,
     required this.displayName,
-    required this.nakamaUserId,
+    required this.nakamaClient,
+    required this.nakamaSession,
   });
 
   final String email;
   final String displayName;
-  final String nakamaUserId;
+  final nakama.NakamaBaseClient nakamaClient;
+  final nakama.Session nakamaSession;
+
+  @override
+  State<MainPage> createState() => _MainPageState();
+}
+
+class _MainPageState extends State<MainPage> {
+  BackendStatus _backendStatus = BackendStatus.checking;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkBackend();
+  }
+
+  Future<void> _checkBackend() async {
+    try {
+      await widget.nakamaClient.rpc(
+        session: widget.nakamaSession,
+        id: 'healthcheck',
+        payload: '',
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _backendStatus = BackendStatus.connected;
+      });
+    } catch (error) {
+      debugPrint('Backend healthcheck failed: $error');
+      if (!mounted) return;
+      setState(() {
+        _backendStatus = BackendStatus.failed;
+      });
+    }
+  }
 
   void _showComingSoon(BuildContext context, String featureName) {
     ScaffoldMessenger.of(
@@ -210,6 +250,37 @@ class MainPage extends StatelessWidget {
         },
       ),
     );
+  }
+
+  Widget _buildBackendStatus(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    switch (_backendStatus) {
+      case BackendStatus.checking:
+        return _BackendStatusPanel(
+          backgroundColor: colorScheme.surfaceContainerHighest,
+          foregroundColor: colorScheme.onSurfaceVariant,
+          leading: const SizedBox.square(
+            dimension: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          label: 'Checking backend...',
+        );
+      case BackendStatus.connected:
+        return _BackendStatusPanel(
+          backgroundColor: Colors.green.shade50,
+          foregroundColor: Colors.green.shade800,
+          leading: const Icon(Icons.check_circle, size: 20),
+          label: 'Backend connected',
+        );
+      case BackendStatus.failed:
+        return _BackendStatusPanel(
+          backgroundColor: colorScheme.errorContainer,
+          foregroundColor: colorScheme.onErrorContainer,
+          leading: const Icon(Icons.error, size: 20),
+          label: 'Backend unavailable',
+        );
+    }
   }
 
   @override
@@ -232,17 +303,12 @@ class MainPage extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'Welcome, $displayName',
+                'Welcome, ${widget.displayName}',
                 style: Theme.of(context).textTheme.headlineSmall,
               ),
               const SizedBox(height: 8),
-              Text(email),
-              const SizedBox(height: 8),
-              Text(
-                'Nakama user id: $nakamaUserId',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 32),
+              Text(widget.email),
+              const SizedBox(height: 28),
               FilledButton.icon(
                 onPressed: () => _showComingSoon(context, 'Play'),
                 icon: const Icon(Icons.play_arrow),
@@ -260,8 +326,57 @@ class MainPage extends StatelessWidget {
                 icon: const Icon(Icons.person),
                 label: const Text('Profile'),
               ),
+              const Spacer(),
+              Align(
+                alignment: Alignment.bottomLeft,
+                child: _buildBackendStatus(context),
+              ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendStatusPanel extends StatelessWidget {
+  const _BackendStatusPanel({
+    required this.backgroundColor,
+    required this.foregroundColor,
+    required this.leading,
+    required this.label,
+  });
+
+  final Color backgroundColor;
+  final Color foregroundColor;
+  final Widget leading;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconTheme(
+              data: IconThemeData(color: foregroundColor),
+              child: leading,
+            ),
+            const SizedBox(width: 10),
+            Text(
+              label,
+              style: TextStyle(
+                color: foregroundColor,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
         ),
       ),
     );
