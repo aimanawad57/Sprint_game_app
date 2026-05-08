@@ -1,3 +1,5 @@
+enum ProfileStatus { loading, loaded, failed }
+
 class PlayerProfile {
   const PlayerProfile({
     required this.gamesPlayed,

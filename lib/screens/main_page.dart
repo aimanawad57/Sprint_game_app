@@ -5,12 +5,10 @@ import 'package:nakama/nakama.dart' as nakama;
 import '../models/player_profile.dart';
 import '../services/nakama_service.dart';
 import '../widgets/backend_status_panel.dart';
-import '../widgets/profile_status_panel.dart';
 import 'login_screen.dart';
+import 'profile_page.dart';
 
 enum BackendStatus { checking, connected, failed }
-
-enum ProfileStatus { loading, loaded, failed }
 
 class MainPage extends StatefulWidget {
   const MainPage({
@@ -85,6 +83,21 @@ class _MainPageState extends State<MainPage> {
     ).showSnackBar(SnackBar(content: Text('$featureName will be added later')));
   }
 
+  void _openProfilePage() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) {
+          return ProfilePage(
+            displayName: widget.displayName,
+            email: widget.email,
+            profile: _playerProfile,
+            profileStatus: _profileStatus,
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _signOut(BuildContext context) async {
     await GoogleSignIn.instance.signOut();
 
@@ -129,69 +142,6 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  Widget _buildProfileStats(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    switch (_profileStatus) {
-      case ProfileStatus.loading:
-        return ProfileStatusPanel(
-          leading: const SizedBox.square(
-            dimension: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          label: 'Loading profile...',
-          foregroundColor: colorScheme.onSurfaceVariant,
-          borderColor: colorScheme.outlineVariant,
-        );
-      case ProfileStatus.failed:
-        return _buildProfileErrorPanel(colorScheme);
-      case ProfileStatus.loaded:
-        final profile = _playerProfile;
-        if (profile == null) {
-          return _buildProfileErrorPanel(colorScheme);
-        }
-
-        final bestTime = profile.bestTimeMs == null
-            ? '-'
-            : '${profile.bestTimeMs} ms';
-
-        return DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border.all(color: colorScheme.outlineVariant),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Profile stats',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 12),
-                Text('Games played: ${profile.gamesPlayed}'),
-                const SizedBox(height: 6),
-                Text('Wins: ${profile.wins}'),
-                const SizedBox(height: 6),
-                Text('Best time: $bestTime'),
-              ],
-            ),
-          ),
-        );
-    }
-  }
-
-  Widget _buildProfileErrorPanel(ColorScheme colorScheme) {
-    return ProfileStatusPanel(
-      leading: const Icon(Icons.error, size: 20),
-      label: 'Could not load profile',
-      foregroundColor: colorScheme.onErrorContainer,
-      borderColor: colorScheme.errorContainer,
-      backgroundColor: colorScheme.errorContainer,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -217,8 +167,6 @@ class _MainPageState extends State<MainPage> {
               ),
               const SizedBox(height: 8),
               Text(widget.email),
-              const SizedBox(height: 20),
-              _buildProfileStats(context),
               const SizedBox(height: 28),
               FilledButton.icon(
                 onPressed: () => _showComingSoon(context, 'Play'),
@@ -233,7 +181,7 @@ class _MainPageState extends State<MainPage> {
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(
-                onPressed: () => _showComingSoon(context, 'Profile'),
+                onPressed: _openProfilePage,
                 icon: const Icon(Icons.person),
                 label: const Text('Profile'),
               ),
