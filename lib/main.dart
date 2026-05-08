@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:nakama/nakama.dart' as nakama;
@@ -8,6 +10,8 @@ const _nakamaHost = '10.0.2.2';
 const _nakamaGrpcPort = 7349;
 const _nakamaServerKey = 'defaultkey';
 const _nakamaUseSsl = false;
+const _playerProfileCollection = 'player';
+const _playerProfileKey = 'profile';
 
 void main() {
   runApp(const MyApp());
@@ -110,6 +114,12 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       final session = await _nakamaClient.authenticateGoogle(token: idToken);
+      final displayName = googleUser.displayName ?? 'Player';
+
+      await _nakamaClient.updateAccount(
+        session: session,
+        displayName: displayName,
+      );
 
       // After an await, check that this screen still exists before using context
       // or setState.
@@ -120,7 +130,7 @@ class _LoginScreenState extends State<LoginScreen> {
           builder: (context) {
             return MainPage(
               email: googleUser.email,
-              displayName: googleUser.displayName ?? 'Player',
+              displayName: displayName,
               nakamaClient: _nakamaClient,
               nakamaSession: session,
             );
@@ -185,6 +195,62 @@ class _LoginScreenState extends State<LoginScreen> {
 
 enum BackendStatus { checking, connected, failed }
 
+enum ProfileStatus { loading, loaded, failed }
+
+class PlayerProfile {
+  const PlayerProfile({
+    required this.gamesPlayed,
+    required this.wins,
+    required this.losses,
+    required this.bestTimeMs,
+    required this.createdAt,
+  });
+
+  final int gamesPlayed;
+  final int wins;
+  final int losses;
+  final int? bestTimeMs;
+  final String createdAt;
+
+  factory PlayerProfile.createDefault() {
+    return PlayerProfile(
+      gamesPlayed: 0,
+      wins: 0,
+      losses: 0,
+      bestTimeMs: null,
+      createdAt: DateTime.now().toUtc().toIso8601String(),
+    );
+  }
+
+  factory PlayerProfile.fromJson(Map<String, dynamic> json) {
+    return PlayerProfile(
+      gamesPlayed: _readInt(json['gamesPlayed']),
+      wins: _readInt(json['wins']),
+      losses: _readInt(json['losses']),
+      bestTimeMs: json['bestTimeMs'] == null
+          ? null
+          : _readInt(json['bestTimeMs']),
+      createdAt: json['createdAt'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'gamesPlayed': gamesPlayed,
+      'wins': wins,
+      'losses': losses,
+      'bestTimeMs': bestTimeMs,
+      'createdAt': createdAt,
+    };
+  }
+
+  static int _readInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return 0;
+  }
+}
+
 class MainPage extends StatefulWidget {
   const MainPage({
     super.key,
@@ -205,11 +271,14 @@ class MainPage extends StatefulWidget {
 
 class _MainPageState extends State<MainPage> {
   BackendStatus _backendStatus = BackendStatus.checking;
+  ProfileStatus _profileStatus = ProfileStatus.loading;
+  PlayerProfile? _playerProfile;
 
   @override
   void initState() {
     super.initState();
     _checkBackend();
+    _loadOrCreatePlayerProfile();
   }
 
   Future<void> _checkBackend() async {
@@ -229,6 +298,53 @@ class _MainPageState extends State<MainPage> {
       if (!mounted) return;
       setState(() {
         _backendStatus = BackendStatus.failed;
+      });
+    }
+  }
+
+  Future<void> _loadOrCreatePlayerProfile() async {
+    try {
+      final objects = await widget.nakamaClient.readStorageObjects(
+        session: widget.nakamaSession,
+        objectIds: const [
+          nakama.StorageObjectId(
+            collection: _playerProfileCollection,
+            key: _playerProfileKey,
+          ),
+        ],
+      );
+
+      final PlayerProfile profile;
+      if (objects.isEmpty) {
+        profile = PlayerProfile.createDefault();
+
+        await widget.nakamaClient.writeStorageObjects(
+          session: widget.nakamaSession,
+          objects: [
+            nakama.StorageObjectWrite(
+              collection: _playerProfileCollection,
+              key: _playerProfileKey,
+              value: jsonEncode(profile.toJson()),
+              permissionRead: nakama.StorageReadPermission.ownerRead,
+              permissionWrite: nakama.StorageWritePermission.ownerWrite,
+            ),
+          ],
+        );
+      } else {
+        final json = jsonDecode(objects.first.value) as Map<String, dynamic>;
+        profile = PlayerProfile.fromJson(json);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _playerProfile = profile;
+        _profileStatus = ProfileStatus.loaded;
+      });
+    } catch (error) {
+      debugPrint('Player profile load failed: $error');
+      if (!mounted) return;
+      setState(() {
+        _profileStatus = ProfileStatus.failed;
       });
     }
   }
@@ -283,6 +399,69 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
+  Widget _buildProfileStats(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    switch (_profileStatus) {
+      case ProfileStatus.loading:
+        return _ProfileStatusPanel(
+          leading: const SizedBox.square(
+            dimension: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          label: 'Loading profile...',
+          foregroundColor: colorScheme.onSurfaceVariant,
+          borderColor: colorScheme.outlineVariant,
+        );
+      case ProfileStatus.failed:
+        return _buildProfileErrorPanel(colorScheme);
+      case ProfileStatus.loaded:
+        final profile = _playerProfile;
+        if (profile == null) {
+          return _buildProfileErrorPanel(colorScheme);
+        }
+
+        final bestTime = profile.bestTimeMs == null
+            ? '-'
+            : '${profile.bestTimeMs} ms';
+
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(color: colorScheme.outlineVariant),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Profile stats',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 12),
+                Text('Games played: ${profile.gamesPlayed}'),
+                const SizedBox(height: 6),
+                Text('Wins: ${profile.wins}'),
+                const SizedBox(height: 6),
+                Text('Best time: $bestTime'),
+              ],
+            ),
+          ),
+        );
+    }
+  }
+
+  Widget _buildProfileErrorPanel(ColorScheme colorScheme) {
+    return _ProfileStatusPanel(
+      leading: const Icon(Icons.error, size: 20),
+      label: 'Could not load profile',
+      foregroundColor: colorScheme.onErrorContainer,
+      borderColor: colorScheme.errorContainer,
+      backgroundColor: colorScheme.errorContainer,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -308,6 +487,8 @@ class _MainPageState extends State<MainPage> {
               ),
               const SizedBox(height: 8),
               Text(widget.email),
+              const SizedBox(height: 20),
+              _buildProfileStats(context),
               const SizedBox(height: 28),
               FilledButton.icon(
                 onPressed: () => _showComingSoon(context, 'Play'),
@@ -374,6 +555,54 @@ class _BackendStatusPanel extends StatelessWidget {
               style: TextStyle(
                 color: foregroundColor,
                 fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileStatusPanel extends StatelessWidget {
+  const _ProfileStatusPanel({
+    required this.leading,
+    required this.label,
+    required this.foregroundColor,
+    required this.borderColor,
+    this.backgroundColor,
+  });
+
+  final Widget leading;
+  final String label;
+  final Color foregroundColor;
+  final Color borderColor;
+  final Color? backgroundColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        border: Border.all(color: borderColor),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            IconTheme(
+              data: IconThemeData(color: foregroundColor),
+              child: leading,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: foregroundColor,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
