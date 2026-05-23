@@ -6,6 +6,7 @@ import '../models/player_profile.dart';
 import '../services/nakama_service.dart';
 import '../widgets/backend_status_panel.dart';
 import 'login_screen.dart';
+import 'play_page.dart';
 import 'profile_page.dart';
 
 enum BackendStatus { checking, connected, failed }
@@ -83,6 +84,19 @@ class _MainPageState extends State<MainPage> {
     ).showSnackBar(SnackBar(content: Text('$featureName will be added later')));
   }
 
+  void _openPlayPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) {
+          return PlayPage(
+            nakamaService: widget.nakamaService,
+            nakamaSession: widget.nakamaSession,
+          );
+        },
+      ),
+    );
+  }
+
   void _openProfilePage() {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -99,6 +113,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _signOut(BuildContext context) async {
+    await widget.nakamaService.closeRealtimeSocket();
     await GoogleSignIn.instance.signOut();
 
     if (!context.mounted) return;
@@ -169,7 +184,7 @@ class _MainPageState extends State<MainPage> {
               Text(widget.email),
               const SizedBox(height: 28),
               FilledButton.icon(
-                onPressed: () => _showComingSoon(context, 'Play'),
+                onPressed: _openPlayPage,
                 icon: const Icon(Icons.play_arrow),
                 label: const Text('Play'),
               ),

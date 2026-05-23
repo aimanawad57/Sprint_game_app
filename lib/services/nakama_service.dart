@@ -15,6 +15,7 @@ class NakamaService {
       );
 
   final nakama.NakamaBaseClient client;
+  nakama.NakamaWebsocketClient? _socket;
 
   Future<nakama.Session> authenticateWithGoogle(String idToken) {
     return client.authenticateGoogle(token: idToken);
@@ -29,6 +30,57 @@ class NakamaService {
 
   Future<void> checkBackend(nakama.Session session) async {
     await client.rpc(session: session, id: 'healthcheck', payload: '');
+  }
+
+  nakama.NakamaWebsocketClient realtimeSocket(nakama.Session session) {
+    // A websocket is the realtime connection Nakama uses for matchmaking,
+    // match messages, presence, and other live game features.
+    return _socket ??= nakama.NakamaWebsocketClient.init(
+      key: 'sprint-realtime',
+      host: nakamaHost,
+      port: nakamaHttpPort,
+      ssl: nakamaUseSsl,
+      token: session.token,
+    );
+  }
+
+  Future<nakama.MatchmakerTicket> joinQuickplayQueue(
+    nakama.NakamaWebsocketClient socket,
+  ) {
+    return socket.addMatchmaker(
+      minCount: 2,
+      maxCount: 2,
+      query: sprintMatchmakerQuery,
+      stringProperties: const {'mode': sprintMatchmakerMode},
+    );
+  }
+
+  Future<void> leaveQuickplayQueue({
+    required nakama.NakamaWebsocketClient socket,
+    required String ticket,
+  }) {
+    return socket.removeMatchmaker(ticket);
+  }
+
+  Future<nakama.Match> joinAuthoritativeMatch({
+    required nakama.NakamaWebsocketClient socket,
+    required String matchId,
+  }) {
+    return socket.joinMatch(matchId);
+  }
+
+  Future<void> leaveAuthoritativeMatch({
+    required nakama.NakamaWebsocketClient socket,
+    required String matchId,
+  }) {
+    return socket.leaveMatch(matchId);
+  }
+
+  Future<void> closeRealtimeSocket() async {
+    final socket = _socket;
+    _socket = null;
+
+    await socket?.close();
   }
 
   Future<PlayerProfile> loadOrCreatePlayerProfile(
