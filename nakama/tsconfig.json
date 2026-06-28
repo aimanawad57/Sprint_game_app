@@ -16,7 +16,7 @@
       "./node_modules"
     ],
     "rootDir": "src",
-    "outDir": "build"
+    "outFile": "build/main.js"
   },
   "files": [
     "./node_modules/nakama-runtime/index.d.ts"

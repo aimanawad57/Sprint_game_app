@@ -22,8 +22,8 @@ gameplay protocol is implemented.
 | 14 | `gameEnded` | Report the final state and winner. |
 | 15 | `connectionChanged` | Report opponent connection or disconnection. |
 
-The current backend opcode `1` `players_joined` event is temporary. We will replace it 
-after we implement these opcodes 
+The backend uses opcode `15` for connection changes. Its payload contains the
+changes from the current callback and a full snapshot of connected user IDs.
 
 ## Client-to-server payload
 
@@ -116,7 +116,7 @@ tests use the codes, not display sentences.
 
 ## State-version policy
 
-1. Every authoritative state change increments `stateVersion` exactly once.
+1. Every authoritative gameplay-state change increments `stateVersion` exactly once.
 2. Rejected moves do not increment it.
 3. The client submits the version it was viewing.
 4. A version mismatch does not automatically reject the move.
@@ -125,3 +125,7 @@ tests use the codes, not display sentences.
 7. If the changed state makes the move illegal, the server rejects it.
 
 This permits a valid move when an opponent changed only the other center pile.
+
+Presence-only changes do not increment `stateVersion`. Connecting or
+disconnecting does not move cards and must not make a submitted gameplay move
+stale. Initial card dealing will still establish gameplay version `1`.

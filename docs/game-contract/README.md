@@ -26,3 +26,4 @@ It intentionally contains no Nakama or Flutter implementation.
 - A successful move automatically refills the hand when the deck is not empty.
 - A rejected move does not change state or increment the state version.
 - A version mismatch causes revalidation, not automatic rejection.
+- Presence-only connection changes do not increment the gameplay state version.
