@@ -62,3 +62,9 @@ The completed catalog must satisfy all of these checks:
 
 The catalog order has no gameplay meaning. The server copies and shuffles the
 catalog for every match.
+
+## Runtime synchronization
+
+The runtime copy is `nakama/src/game/card_catalog.ts`. The permanent backend
+test compares it row-for-row with `card-catalog.csv`, so either copy changing
+without the other fails validation.

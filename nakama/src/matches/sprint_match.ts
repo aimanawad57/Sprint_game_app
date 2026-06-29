@@ -91,6 +91,24 @@ function broadcastConnectionChanged(
   );
 }
 
+function sendMatchStarted(
+  dispatcher: nkruntime.MatchDispatcher,
+  state: SprintMatchState
+): void {
+  state.playerOrder.forEach((userId) => {
+    const presence = state.presences[userId];
+    if (!presence) {
+      throw new Error("Cannot send matchStarted without both player presences.");
+    }
+
+    dispatcher.broadcastMessage(
+      ServerOpcode.MatchStarted,
+      JSON.stringify(buildPlayerStateView(state, userId)),
+      [presence]
+    );
+  });
+}
+
 function sprintMatchInit(
   ctx: nkruntime.Context,
   logger: nkruntime.Logger,
@@ -181,6 +199,23 @@ function sprintMatchJoin(
       "Sprint match connection change: connected users %s",
       buildConnectionChangedPayload(state, changes).connectedUserIds.join(",")
     );
+  }
+
+  if (initializeGameState(state)) {
+    const playerA = state.players[state.playerOrder[0]];
+    const playerB = state.players[state.playerOrder[1]];
+    logger.info(
+      "Sprint match initialized for players %s: hands %d/%d, decks %d/%d, center piles %d/%d, version %d",
+      state.playerOrder.join(","),
+      playerA.hand.length,
+      playerB.hand.length,
+      playerA.deck.length,
+      playerB.deck.length,
+      state.centerPiles.pile_1.length,
+      state.centerPiles.pile_2.length,
+      state.stateVersion
+    );
+    sendMatchStarted(dispatcher, state);
   }
 
   return {state: state};

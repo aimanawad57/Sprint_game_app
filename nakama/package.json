@@ -4,11 +4,11 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "npm run build && node --test test/game_initialization.test.js"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
     "nakama-runtime": "github:heroiclabs/nakama-common"
   }
 }
-

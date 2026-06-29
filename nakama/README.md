@@ -30,6 +30,16 @@ docker compose up --build nakama
 Runtime logic is TypeScript under `src/` and is compiled into the Nakama image.
 The first RPC is `healthcheck`, intended as a simple app-to-backend connectivity test.
 
+Run backend validation with:
+
+```powershell
+npm run type-check
+npm test
+```
+
+The test suite validates the runtime catalog against the reviewed CSV, initial
+card distribution, privacy of player views, and one-time match initialization.
+
 ## Verify RPC
 
 Create a local device session and call the runtime healthcheck RPC:

@@ -43,6 +43,11 @@ The authoritative Nakama match performs setup:
 10. Start the match only after both expected players have joined.
 ```
 
+The connection-change event for the second player is broadcast before setup.
+After setup, Nakama sends one targeted `matchStarted` event to each player.
+Initialization is guarded by match status and empty card state, so a reconnect
+cannot reshuffle or redeal an active match.
+
 ## Initial state
 
 ```text
@@ -69,3 +74,6 @@ Center pile 2: 1
 - Player A cannot receive Player B's hand or deck contents.
 - Player B cannot receive Player A's hand or deck contents.
 - Neither player receives the order of their own remaining private deck.
+
+These checks are enforced by permanent backend tests and by a runtime
+card-conservation assertion after every initial deal.

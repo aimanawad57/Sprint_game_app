@@ -1,3 +1,8 @@
+// This creates the authoritative match for the sprint game when the matchmaker finds a match. 
+// It uses the expectedUserIds from the matchmaker result to create a new match with those users. 
+// The matchCreate function returns the match ID of the newly created match, 
+//    which is then returned by this function.
+
 function matchmakerMatched(
   ctx: nkruntime.Context,
   logger: nkruntime.Logger,

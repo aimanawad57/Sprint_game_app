@@ -43,3 +43,17 @@ type ConnectionChangedPayload = {
   connectedCount: number;
   expectedCount: number;
 };
+
+type PlayerStateView = {
+  stateVersion: number;
+  status: MatchStatus;
+  myHand: Card[];
+  myDeckCount: number;
+  opponentHandCount: number;
+  opponentDeckCount: number;
+  centerPiles: {
+    pile_1: {topCard: Card};
+    pile_2: {topCard: Card};
+  };
+  winnerId: string | null;
+};

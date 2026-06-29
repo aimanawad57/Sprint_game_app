@@ -1,7 +1,8 @@
 # Sprint Game Contract
 
-This directory contains the Initial design contract for the Sprint game core.
-It intentionally contains no Nakama or Flutter implementation.
+This directory contains the reviewed contract for the Sprint game core. Nakama
+implements the catalog, initial deal, private initial state, and connection
+events. Flutter gameplay handling is intentionally deferred.
 
 ## Documents
 
@@ -27,3 +28,5 @@ It intentionally contains no Nakama or Flutter implementation.
 - A rejected move does not change state or increment the state version.
 - A version mismatch causes revalidation, not automatic rejection.
 - Presence-only connection changes do not increment the gameplay state version.
+- Initial dealing is complete when both expected players connect and establishes gameplay version `1`.
+- Reconnection never reshuffles, redeals, or sends a second `matchStarted` event.
