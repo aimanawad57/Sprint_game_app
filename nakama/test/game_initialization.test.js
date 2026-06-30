@@ -16,13 +16,18 @@ function loadRuntimeForTest() {
     "createWaitingMatchState," +
     "initializeGameState," +
     "buildPlayerStateView," +
+    "applySubmitMove," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
     "sprintMatchLeave," +
+    "sprintMatchLoop," +
     "MatchStatus," +
     "CardColor," +
     "CardShape," +
-    "ServerOpcode" +
+    "ClientOpcode," +
+    "ServerOpcode," +
+    "MoveRejectionReason," +
+    "PileId" +
     "};";
   const context = {};
   vm.createContext(context);
@@ -66,6 +71,24 @@ function collectStateCards(state) {
     .concat(playerB.deck)
     .concat(state.centerPiles.pile_1)
     .concat(state.centerPiles.pile_2);
+}
+
+function createInitializedState(runtime) {
+  const state = createConnectedWaitingState(runtime);
+  runtime.initializeGameState(state, () => 0);
+  return state;
+}
+
+function card(id, color, shape, count) {
+  return {card_id: id, color, shape, count};
+}
+
+function submitMoveMessage(runtime, userId, payload) {
+  return {
+    opCode: runtime.ClientOpcode.SubmitMove,
+    sender: {userId, sessionId: userId + "-session"},
+    data: JSON.stringify(payload)
+  };
 }
 
 const runtime = loadRuntimeForTest();
@@ -260,4 +283,185 @@ test("match lifecycle rejects users outside canonical player order", () => {
 
   assert.equal(result.accept, false);
   assert.equal(result.rejectMessage, "This user was not assigned to this match.");
+});
+
+test("applySubmitMove accepts a legal move, draws replacement, and increments version", () => {
+  const state = createInitializedState(runtime);
+  const player = state.players["player-a"];
+  const playedCard = player.hand[0];
+  const replacementCard = player.deck[player.deck.length - 1];
+  state.centerPiles.pile_1 = [
+    card("pile_top", playedCard.color, runtime.CardShape.Sun, 6)
+  ];
+  const beforeVersion = state.stateVersion;
+
+  const result = runtime.applySubmitMove(
+    state,
+    {userId: "player-a"},
+    JSON.stringify({
+      card_id: playedCard.card_id,
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: beforeVersion
+    })
+  );
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.gameEnded, false);
+  assert.equal(state.stateVersion, beforeVersion + 1);
+  assert.equal(state.centerPiles.pile_1.at(-1).card_id, playedCard.card_id);
+  assert.equal(player.hand.length, 3);
+  assert.equal(player.hand.some((handCard) => handCard.card_id === playedCard.card_id), false);
+  assert.equal(player.hand.some((handCard) => handCard.card_id === replacementCard.card_id), true);
+  assert.equal(player.deck.length, 26);
+});
+
+test("applySubmitMove rejects inactive match, unknown player, missing card, bad pile, and mismatch", () => {
+  const state = createInitializedState(runtime);
+  const player = state.players["player-a"];
+  const playedCard = player.hand[0];
+
+  const inactive = normalize(state);
+  inactive.status = runtime.MatchStatus.Waiting;
+  assert.equal(
+    runtime.applySubmitMove(
+      inactive,
+      {userId: "player-a"},
+      JSON.stringify({
+        card_id: playedCard.card_id,
+        targetPileId: runtime.PileId.Pile1,
+        expectedStateVersion: inactive.stateVersion
+      })
+    ).rejection.reason,
+    runtime.MoveRejectionReason.MatchNotActive
+  );
+
+  assert.equal(
+    runtime.applySubmitMove(
+      state,
+      {userId: "outsider"},
+      JSON.stringify({
+        card_id: playedCard.card_id,
+        targetPileId: runtime.PileId.Pile1,
+        expectedStateVersion: state.stateVersion
+      })
+    ).rejection.reason,
+    runtime.MoveRejectionReason.PlayerNotInMatch
+  );
+
+  assert.equal(
+    runtime.applySubmitMove(
+      state,
+      {userId: "player-a"},
+      JSON.stringify({
+        card_id: "not_in_hand",
+        targetPileId: runtime.PileId.Pile1,
+        expectedStateVersion: state.stateVersion
+      })
+    ).rejection.reason,
+    runtime.MoveRejectionReason.CardNotInHand
+  );
+
+  assert.equal(
+    runtime.applySubmitMove(
+      state,
+      {userId: "player-a"},
+      JSON.stringify({
+        card_id: playedCard.card_id,
+        targetPileId: "pile_3",
+        expectedStateVersion: state.stateVersion
+      })
+    ).rejection.reason,
+    runtime.MoveRejectionReason.InvalidTargetPile
+  );
+
+  state.centerPiles.pile_1 = [
+    card("pile_top", runtime.CardColor.Purple, runtime.CardShape.Sun, 6)
+  ];
+  player.hand[0] = card("unmatched", runtime.CardColor.Red, runtime.CardShape.Star, 1);
+  assert.equal(
+    runtime.applySubmitMove(
+      state,
+      {userId: "player-a"},
+      JSON.stringify({
+        card_id: "unmatched",
+        targetPileId: runtime.PileId.Pile1,
+        expectedStateVersion: state.stateVersion
+      })
+    ).rejection.reason,
+    runtime.MoveRejectionReason.CardDoesNotMatch
+  );
+});
+
+test("applySubmitMove ends the game when the last hand card is played with no deck", () => {
+  const state = createInitializedState(runtime);
+  const player = state.players["player-a"];
+  player.hand = [card("last_card", runtime.CardColor.Red, runtime.CardShape.Star, 1)];
+  player.deck = [];
+  state.centerPiles.pile_1 = [
+    card("pile_top", runtime.CardColor.Red, runtime.CardShape.Sun, 6)
+  ];
+
+  const result = runtime.applySubmitMove(
+    state,
+    {userId: "player-a"},
+    JSON.stringify({
+      card_id: "last_card",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion
+    })
+  );
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.gameEnded, true);
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, "player-a");
+});
+
+test("sprintMatchLoop broadcasts private state updates and targeted move rejections", () => {
+  const state = createInitializedState(runtime);
+  const player = state.players["player-a"];
+  const playedCard = player.hand[0];
+  state.centerPiles.pile_1 = [
+    card("pile_top", playedCard.color, runtime.CardShape.Sun, 6)
+  ];
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    },
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+
+  runtime.sprintMatchLoop(null, logger, null, dispatcher, 1, state, [
+    submitMoveMessage(runtime, "player-a", {
+      card_id: playedCard.card_id,
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion
+    })
+  ]);
+
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.StateUpdate,
+    runtime.ServerOpcode.StateUpdate
+  ]);
+  assert.equal(calls[0].presences.length, 1);
+  assert.equal(calls[1].presences.length, 1);
+  assert.notEqual(calls[0].data.myHand[0]?.card_id, undefined);
+
+  const callCountAfterValidMove = calls.length;
+  runtime.sprintMatchLoop(null, logger, null, dispatcher, 2, state, [
+    submitMoveMessage(runtime, "player-a", {
+      card_id: "missing",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion
+    })
+  ]);
+
+  assert.equal(calls.length, callCountAfterValidMove + 1);
+  assert.equal(calls.at(-1).opcode, runtime.ServerOpcode.MoveRejected);
+  assert.equal(
+    calls.at(-1).data.reason,
+    runtime.MoveRejectionReason.CardNotInHand
+  );
+  assert.equal(calls.at(-1).presences[0].userId, "player-a");
 });

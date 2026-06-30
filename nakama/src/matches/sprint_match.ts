@@ -109,6 +109,52 @@ function sendMatchStarted(
   });
 }
 
+function sendPlayerStateViews(
+  dispatcher: nkruntime.MatchDispatcher,
+  state: SprintMatchState,
+  opcode: ServerOpcode
+): void {
+  state.playerOrder.forEach((userId) => {
+    const presence = state.presences[userId];
+    if (!presence) {
+      return;
+    }
+
+    dispatcher.broadcastMessage(
+      opcode,
+      JSON.stringify(buildPlayerStateView(state, userId)),
+      [presence]
+    );
+  });
+}
+
+function sendMoveRejected(
+  dispatcher: nkruntime.MatchDispatcher,
+  state: SprintMatchState,
+  result: ApplyMoveResult
+): void {
+  if (result.accepted) {
+    return;
+  }
+
+  const rejectedResult = result as {
+    accepted: false;
+    playerId: string | null;
+    rejection: MoveRejectedPayload;
+  };
+  const playerId = rejectedResult.playerId;
+  const presence = playerId ? state.presences[playerId] : undefined;
+  if (!presence) {
+    return;
+  }
+
+  dispatcher.broadcastMessage(
+    ServerOpcode.MoveRejected,
+    JSON.stringify(rejectedResult.rejection),
+    [presence]
+  );
+}
+
 function sprintMatchInit(
   ctx: nkruntime.Context,
   logger: nkruntime.Logger,
@@ -271,6 +317,40 @@ function sprintMatchLoop(
   state: SprintMatchState,
   messages: nkruntime.MatchMessage[]
 ): {state: SprintMatchState} {
+  messages.forEach((message) => {
+    if (message.opCode !== ClientOpcode.SubmitMove) {
+      return;
+    }
+
+    const result = applySubmitMove(state, message.sender || null, message.data);
+    if (!result.accepted) {
+      const rejectedResult = result as {
+        accepted: false;
+        playerId: string | null;
+        rejection: MoveRejectedPayload;
+      };
+      logger.info(
+        "Rejected sprint move from user %s: %s",
+        rejectedResult.playerId || "unknown",
+        rejectedResult.rejection.reason
+      );
+      sendMoveRejected(dispatcher, state, rejectedResult);
+      return;
+    }
+
+    logger.info(
+      "Accepted sprint move from user %s at version %d",
+      result.playerId,
+      state.stateVersion
+    );
+
+    sendPlayerStateViews(
+      dispatcher,
+      state,
+      result.gameEnded ? ServerOpcode.GameEnded : ServerOpcode.StateUpdate
+    );
+  });
+
   return {state: state};
 }
 
