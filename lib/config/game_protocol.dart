@@ -1,3 +1,7 @@
+abstract final class GameClientOpcode {
+  static const int submitMove = 1;
+}
+
 abstract final class GameServerOpcode {
   static const int matchStarted = 10;
   static const int stateUpdate = 11;

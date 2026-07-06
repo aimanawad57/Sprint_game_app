@@ -38,7 +38,8 @@ npm test
 ```
 
 The test suite validates the runtime catalog against the reviewed CSV, initial
-card distribution, privacy of player views, and one-time match initialization.
+card distribution, privacy of player views, one-time match initialization, and
+authoritative move processing.
 
 ## Verify RPC
 

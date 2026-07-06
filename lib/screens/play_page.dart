@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:nakama/nakama.dart' as nakama;
 
 import '../config/game_protocol.dart';
+import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
 import '../services/game_message_decoder.dart';
 import '../services/nakama_service.dart';
@@ -44,6 +45,9 @@ class _PlayPageState extends State<PlayPage> {
   String? _joiningMatchId;
   String? _matchId;
   String? _errorMessage;
+  String? _moveFeedback;
+  String? _pendingCardId;
+  bool _isMovePending = false;
   int _matchedPlayerCount = 0;
 
   @override
@@ -149,29 +153,109 @@ class _PlayPageState extends State<PlayPage> {
   }
 
   void _handleMatchData(nakama.MatchData message) {
-    if (message.opCode != GameServerOpcode.matchStarted) {
-      debugPrint('Ignoring server opcode ${message.opCode} in Step 4.');
-      return;
-    }
-
     final expectedMatchId = _matchId ?? _joiningMatchId;
     if (expectedMatchId == null || message.matchId != expectedMatchId) {
-      debugPrint('Ignoring matchStarted data for an unexpected match.');
+      debugPrint('Ignoring game data for an unexpected match.');
       return;
     }
 
     try {
-      final gameState = _messageDecoder.decodeGameState(message.data);
-      if (!mounted) return;
-
-      setState(() {
-        _gameState = gameState;
-        _errorMessage = null;
-        _status = PlayQueueStatus.ready;
-      });
+      switch (message.opCode) {
+        case GameServerOpcode.matchStarted:
+        case GameServerOpcode.stateUpdate:
+        case GameServerOpcode.gameEnded:
+          _applyAuthoritativeState(
+            _messageDecoder.decodeGameState(message.data),
+          );
+          break;
+        case GameServerOpcode.moveRejected:
+          final rejection = _messageDecoder.decodeMoveRejected(message.data);
+          if (!mounted) return;
+          setState(() {
+            _isMovePending = false;
+            _pendingCardId = null;
+            _moveFeedback = rejection.reason.displayMessage;
+          });
+          break;
+        default:
+          debugPrint('Ignoring server opcode ${message.opCode}.');
+      }
     } on FormatException catch (error, stackTrace) {
-      debugPrint('Invalid matchStarted payload: $error\n$stackTrace');
-      _setFailure('The game server sent invalid initialization data.');
+      debugPrint(
+        'Invalid payload for server opcode ${message.opCode}: '
+        '$error\n$stackTrace',
+      );
+      _setFailure('The game server sent invalid game data.');
+    }
+  }
+
+  void _applyAuthoritativeState(GameStateView gameState) {
+    if (!mounted) return;
+
+    final currentState = _gameState;
+    if (currentState != null &&
+        gameState.stateVersion < currentState.stateVersion) {
+      debugPrint(
+        'Ignoring older game state version ${gameState.stateVersion}; '
+        'current version is ${currentState.stateVersion}.',
+      );
+      return;
+    }
+
+    final pendingCardWasPlayed =
+        _pendingCardId != null &&
+        !gameState.myHand.any((card) => card.cardId == _pendingCardId);
+    final pendingMoveResolved =
+        pendingCardWasPlayed || gameState.status == GameMatchStatus.finished;
+
+    setState(() {
+      _gameState = gameState;
+      _errorMessage = null;
+      _moveFeedback = null;
+      if (pendingMoveResolved) {
+        _pendingCardId = null;
+        _isMovePending = false;
+      }
+      _status = PlayQueueStatus.ready;
+    });
+  }
+
+  void _submitMove(String cardId, GamePileId pileId) {
+    final socket = _socket;
+    final matchId = _matchId ?? _joiningMatchId;
+    final gameState = _gameState;
+    if (socket == null ||
+        matchId == null ||
+        gameState == null ||
+        gameState.status != GameMatchStatus.active ||
+        _isMovePending) {
+      return;
+    }
+
+    setState(() {
+      _isMovePending = true;
+      _pendingCardId = cardId;
+      _moveFeedback = null;
+    });
+
+    try {
+      widget.nakamaService.submitMove(
+        socket: socket,
+        matchId: matchId,
+        move: SubmitMovePayload(
+          cardId: cardId,
+          targetPileId: pileId,
+          expectedStateVersion: gameState.stateVersion,
+        ),
+      );
+    } catch (error) {
+      debugPrint('Could not submit move: $error');
+      if (!mounted) return;
+      setState(() {
+        _isMovePending = false;
+        _pendingCardId = null;
+        _moveFeedback = 'Could not send the move.';
+      });
     }
   }
 
@@ -282,7 +366,10 @@ class _PlayPageState extends State<PlayPage> {
         child: _status == PlayQueueStatus.ready && gameState != null
             ? GameStatePanel(
                 gameState: gameState,
+                onSubmitMove: _submitMove,
                 onBack: () => Navigator.of(context).pop(),
+                isSubmitting: _isMovePending,
+                feedbackMessage: _moveFeedback,
               )
             : Padding(
                 padding: const EdgeInsets.all(24),

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:nakama/nakama.dart' as nakama;
 
 import '../config/nakama_config.dart';
+import '../config/game_protocol.dart';
+import '../models/game/game_move.dart';
 import '../models/player_profile.dart';
 
 class NakamaService {
@@ -74,6 +76,18 @@ class NakamaService {
     required String matchId,
   }) {
     return socket.leaveMatch(matchId);
+  }
+
+  void submitMove({
+    required nakama.NakamaWebsocketClient socket,
+    required String matchId,
+    required SubmitMovePayload move,
+  }) {
+    socket.sendMatchData(
+      matchId: matchId,
+      opCode: GameClientOpcode.submitMove,
+      data: utf8.encode(jsonEncode(move.toJson())),
+    );
   }
 
   Future<void> closeRealtimeSocket() async {

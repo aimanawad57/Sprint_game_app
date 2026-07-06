@@ -65,4 +65,30 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('decodes a move rejection', () {
+    final rejection = decoder.decodeMoveRejected(
+      utf8.encode(
+        jsonEncode({
+          'stateVersion': 2,
+          'reason': 'card_does_not_match',
+          'card_id': 'card_001',
+          'targetPileId': 'pile_1',
+        }),
+      ),
+    );
+
+    expect(rejection.stateVersion, 2);
+    expect(rejection.reason.wireValue, 'card_does_not_match');
+    expect(rejection.cardId, 'card_001');
+  });
+
+  test('rejects an unknown move rejection reason', () {
+    expect(
+      () => decoder.decodeMoveRejected(
+        utf8.encode(jsonEncode({'stateVersion': 2, 'reason': 'not_supported'})),
+      ),
+      throwsFormatException,
+    );
+  });
 }

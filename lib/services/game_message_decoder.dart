@@ -1,11 +1,20 @@
 import 'dart:convert';
 
+import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
 
 class GameMessageDecoder {
   const GameMessageDecoder();
 
   GameStateView decodeGameState(List<int>? data) {
+    return GameStateView.fromJson(_decodeJsonObject(data));
+  }
+
+  MoveRejectedView decodeMoveRejected(List<int>? data) {
+    return MoveRejectedView.fromJson(_decodeJsonObject(data));
+  }
+
+  Map<String, dynamic> _decodeJsonObject(List<int>? data) {
     if (data == null) {
       throw const FormatException('Match message data is missing');
     }
@@ -29,7 +38,7 @@ class GameMessageDecoder {
     }
 
     try {
-      return GameStateView.fromJson(Map<String, dynamic>.from(decoded));
+      return Map<String, dynamic>.from(decoded);
     } on TypeError {
       throw const FormatException('Match message JSON must have string keys');
     }

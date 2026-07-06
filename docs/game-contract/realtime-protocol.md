@@ -93,6 +93,11 @@ Opcode `10` (`matchStarted`) is implemented. Its initial payload uses
 Nakama sends the payload separately to each player presence. It never includes
 the opponent hand, either private deck, or center-pile history.
 
+Opcodes `11` (`stateUpdate`) and `14` (`gameEnded`) are also implemented.
+Nakama sends a fresh private player view after every accepted move. Flutter
+replaces its local snapshot only from these authoritative messages and does not
+move or draw cards optimistically.
+
 ### Move rejection - opcode 12
 
 ```json
@@ -119,6 +124,10 @@ game_finished
 
 Flutter converts these stable codes into user-facing text. Server code and
 tests use the codes, not display sentences.
+
+Opcode `12` (`moveRejected`) is implemented on both Nakama and Flutter. A
+rejection leaves the current game snapshot unchanged and displays the stable
+reason as user-facing feedback.
 
 ## State-version policy
 
