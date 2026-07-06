@@ -155,6 +155,33 @@ function sendMoveRejected(
   );
 }
 
+function resolveAndBroadcastStuckState(
+  dispatcher: nkruntime.MatchDispatcher,
+  state: SprintMatchState,
+  logger: nkruntime.Logger,
+  random: RandomSource = Math.random,
+  maxAttempts: number = MAX_STUCK_RESET_ATTEMPTS
+): void {
+  const result = resolveStuckState(state, () => {
+    logger.info(
+      "Resetting stuck sprint center piles at version %d",
+      state.stateVersion
+    );
+    sendPlayerStateViews(dispatcher, state, ServerOpcode.StuckReset);
+  }, random, maxAttempts);
+
+  if (result.blockedBySingleCardPiles) {
+    logger.warn(
+      "Sprint match is stuck but both center piles contain only one card; reset deferred"
+    );
+  } else if (result.stillStuck) {
+    logger.warn(
+      "Sprint match remains stuck after %d center-pile reset attempts",
+      result.resetCount
+    );
+  }
+}
+
 function sprintMatchInit(
   ctx: nkruntime.Context,
   logger: nkruntime.Logger,
@@ -349,6 +376,10 @@ function sprintMatchLoop(
       state,
       result.gameEnded ? ServerOpcode.GameEnded : ServerOpcode.StateUpdate
     );
+
+    if (!result.gameEnded) {
+      resolveAndBroadcastStuckState(dispatcher, state, logger);
+    }
   });
 
   return {state: state};

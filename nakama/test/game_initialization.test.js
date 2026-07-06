@@ -17,6 +17,11 @@ function loadRuntimeForTest() {
     "initializeGameState," +
     "buildPlayerStateView," +
     "applySubmitMove," +
+    "hasAnyLegalMove," +
+    "isGameStuck," +
+    "reshuffleCenterPiles," +
+    "resolveStuckState," +
+    "resolveAndBroadcastStuckState," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
     "sprintMatchLeave," +
@@ -464,4 +469,138 @@ test("sprintMatchLoop broadcasts private state updates and targeted move rejecti
     runtime.MoveRejectionReason.CardNotInHand
   );
   assert.equal(calls.at(-1).presences[0].userId, "player-a");
+});
+
+function createStuckResetState(runtime) {
+  const state = createInitializedState(runtime);
+  state.stateVersion = 7;
+  state.players["player-a"].hand = [
+    card("hand_a", runtime.CardColor.Green, runtime.CardShape.Heart, 6)
+  ];
+  state.players["player-b"].hand = [
+    card("hand_b", runtime.CardColor.Purple, runtime.CardShape.Heart, 6)
+  ];
+  state.centerPiles.pile_1 = [
+    card("pile_1_old", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("pile_1_top", runtime.CardColor.Red, runtime.CardShape.Star, 1)
+  ];
+  state.centerPiles.pile_2 = [
+    card("pile_2_old", runtime.CardColor.Yellow, runtime.CardShape.Sun, 5),
+    card("pile_2_top", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2)
+  ];
+  return state;
+}
+
+test("stuck detection checks every hand against both center piles", () => {
+  const state = createStuckResetState(runtime);
+  assert.equal(runtime.hasAnyLegalMove(state), false);
+  assert.equal(runtime.isGameStuck(state), true);
+
+  state.players["player-b"].hand.push(
+    card("legal", runtime.CardColor.Blue, runtime.CardShape.Circle, 6)
+  );
+  assert.equal(runtime.hasAnyLegalMove(state), true);
+  assert.equal(runtime.isGameStuck(state), false);
+});
+
+test("stuck reset shuffles piles separately without changing hands or decks", () => {
+  const state = createStuckResetState(runtime);
+  const handsBefore = normalize(state.playerOrder.map((id) => state.players[id].hand));
+  const decksBefore = normalize(state.playerOrder.map((id) => state.players[id].deck));
+  const pile1Ids = state.centerPiles.pile_1.map((item) => item.card_id).sort();
+  const pile2Ids = state.centerPiles.pile_2.map((item) => item.card_id).sort();
+
+  assert.equal(runtime.reshuffleCenterPiles(state, () => 0), true);
+
+  assert.equal(state.stateVersion, 8);
+  assert.deepEqual(normalize(state.playerOrder.map((id) => state.players[id].hand)), handsBefore);
+  assert.deepEqual(normalize(state.playerOrder.map((id) => state.players[id].deck)), decksBefore);
+  assert.deepEqual(state.centerPiles.pile_1.map((item) => item.card_id).sort(), pile1Ids);
+  assert.deepEqual(state.centerPiles.pile_2.map((item) => item.card_id).sort(), pile2Ids);
+  assert.equal(state.centerPiles.pile_1.at(-1).card_id, "pile_1_old");
+  assert.equal(runtime.isGameStuck(state), false);
+});
+
+test("stuck resolution broadcasts each reset and checks again", () => {
+  const state = createStuckResetState(runtime);
+  const randomValues = [0.9, 0.9, 0, 0];
+  const observedVersions = [];
+  const result = runtime.resolveStuckState(
+    state,
+    (current) => observedVersions.push(current.stateVersion),
+    () => randomValues.shift(),
+    4
+  );
+
+  assert.deepEqual(observedVersions, [8, 9]);
+  assert.equal(result.resetCount, 2);
+  assert.equal(result.stillStuck, false);
+  assert.equal(result.blockedBySingleCardPiles, false);
+  assert.equal(state.stateVersion, 9);
+});
+
+test("one multi-card pile resets while the single-card pile stays unchanged", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  const pile2Before = normalize(state.centerPiles.pile_2);
+  const decksBefore = normalize(state.playerOrder.map((id) => state.players[id].deck));
+
+  assert.equal(runtime.reshuffleCenterPiles(state, () => 0), true);
+
+  assert.equal(state.stateVersion, 8);
+  assert.equal(state.centerPiles.pile_1.at(-1).card_id, "pile_1_old");
+  assert.deepEqual(normalize(state.centerPiles.pile_2), pile2Before);
+  assert.deepEqual(normalize(state.playerOrder.map((id) => state.players[id].deck)), decksBefore);
+  assert.equal(runtime.isGameStuck(state), false);
+});
+
+test("two single-card center piles defer reset without touching player decks", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  const before = normalize(state);
+  let observerCalls = 0;
+
+  const result = runtime.resolveStuckState(
+    state,
+    () => observerCalls += 1,
+    () => 0,
+    4
+  );
+
+  assert.equal(result.resetCount, 0);
+  assert.equal(result.stillStuck, true);
+  assert.equal(result.blockedBySingleCardPiles, true);
+  assert.equal(observerCalls, 0);
+  assert.deepEqual(normalize(state), before);
+});
+
+test("match layer sends targeted opcode 13 views after every reset", () => {
+  const state = createStuckResetState(runtime);
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    }
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+  const randomValues = [0.9, 0.9, 0, 0];
+
+  runtime.resolveAndBroadcastStuckState(
+    dispatcher,
+    state,
+    logger,
+    () => randomValues.shift(),
+    4
+  );
+
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.StuckReset,
+    runtime.ServerOpcode.StuckReset,
+    runtime.ServerOpcode.StuckReset,
+    runtime.ServerOpcode.StuckReset
+  ]);
+  assert.deepEqual(calls.map((call) => call.data.stateVersion), [8, 8, 9, 9]);
+  assert.equal(calls.every((call) => call.presences.length === 1), true);
+  assert.notDeepEqual(calls[0].data.myHand, calls[1].data.myHand);
 });

@@ -163,6 +163,7 @@ class _PlayPageState extends State<PlayPage> {
       switch (message.opCode) {
         case GameServerOpcode.matchStarted:
         case GameServerOpcode.stateUpdate:
+        case GameServerOpcode.stuckReset:
         case GameServerOpcode.gameEnded:
           _applyAuthoritativeState(
             _messageDecoder.decodeGameState(message.data),

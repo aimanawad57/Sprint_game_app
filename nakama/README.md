@@ -39,7 +39,8 @@ npm test
 
 The test suite validates the runtime catalog against the reviewed CSV, initial
 card distribution, privacy of player views, one-time match initialization, and
-authoritative move processing.
+authoritative move processing. It also covers stuck detection, separate center-
+pile resets, repeated stuck checks, and the deferred single-card-pile case.
 
 ## Verify RPC
 

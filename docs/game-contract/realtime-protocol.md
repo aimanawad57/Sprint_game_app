@@ -129,6 +129,20 @@ Opcode `12` (`moveRejected`) is implemented on both Nakama and Flutter. A
 rejection leaves the current game snapshot unchanged and displays the stable
 reason as user-facing feedback.
 
+### Stuck reset - opcode 13
+
+After every accepted non-winning move, Nakama checks both players' current
+hands against both center-pile top cards. If no legal move exists, every center
+pile with more than one card is shuffled independently; a one-card pile remains
+unchanged while the other pile can still be shuffled. Cards never move between
+the two piles. Player hands and private decks are unchanged.
+
+Each reset increments `stateVersion`, sends a private opcode `13` player view,
+and is checked again. Reset attempts are bounded to prevent an infinite loop.
+Flutter handles opcode `13` as an authoritative state replacement. Reset is
+deferred without changing player decks only when both center piles contain one
+card; that edge case is intentionally reserved for a later rule decision.
+
 ## State-version policy
 
 1. Every authoritative gameplay-state change increments `stateVersion` exactly once.
