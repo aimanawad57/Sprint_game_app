@@ -15,6 +15,7 @@ enum PlayQueueStatus {
   searching,
   joiningMatch,
   waitingForInitialState,
+  reconnecting,
   ready,
   failed,
 }
@@ -39,6 +40,7 @@ class _PlayPageState extends State<PlayPage> {
   PlayQueueStatus _status = PlayQueueStatus.connecting;
   StreamSubscription<nakama.MatchmakerMatched>? _matchmakerSubscription;
   StreamSubscription<nakama.MatchData>? _matchDataSubscription;
+  StreamSubscription<void>? _socketDisconnectSubscription;
   nakama.NakamaWebsocketClient? _socket;
   GameStateView? _gameState;
   String? _ticket;
@@ -48,11 +50,14 @@ class _PlayPageState extends State<PlayPage> {
   String? _moveFeedback;
   String? _pendingCardId;
   bool _isMovePending = false;
+  bool _isRecoveringConnection = false;
   int _matchedPlayerCount = 0;
 
   @override
   void initState() {
     super.initState();
+    _socketDisconnectSubscription = widget.nakamaService.realtimeDisconnects
+        .listen((_) => unawaited(_recoverMatchConnection()));
     _startMatchmaking();
   }
 
@@ -60,9 +65,19 @@ class _PlayPageState extends State<PlayPage> {
   void dispose() {
     unawaited(_matchDataSubscription?.cancel());
     unawaited(_matchmakerSubscription?.cancel());
+    unawaited(_socketDisconnectSubscription?.cancel());
     unawaited(_cancelMatchmaking());
     unawaited(_leaveMatchIfJoined());
     super.dispose();
+  }
+
+  void _subscribeToMatchData(nakama.NakamaWebsocketClient socket) {
+    _matchDataSubscription = socket.onMatchData.listen(
+      _handleMatchData,
+      onError: (Object error) {
+        debugPrint('Match data stream failed: $error');
+      },
+    );
   }
 
   Future<void> _startMatchmaking() async {
@@ -72,13 +87,7 @@ class _PlayPageState extends State<PlayPage> {
 
       // Subscribe before matchmaking so a fast match-started message cannot be
       // missed while joinMatch is still completing.
-      _matchDataSubscription = socket.onMatchData.listen(
-        _handleMatchData,
-        onError: (Object error) {
-          _setFailure('The game message stream stopped unexpectedly.');
-          debugPrint('Match data stream failed: $error');
-        },
-      );
+      _subscribeToMatchData(socket);
 
       // Nakama sends this event when the server finds enough compatible players.
       _matchmakerSubscription = socket.onMatchmakerMatched.listen(
@@ -102,6 +111,50 @@ class _PlayPageState extends State<PlayPage> {
     } catch (error) {
       debugPrint('Could not start matchmaking: $error');
       _setFailure('Could not start matchmaking.');
+    }
+  }
+
+  Future<void> _recoverMatchConnection() async {
+    final matchId = _matchId ?? _joiningMatchId;
+    if (!mounted || matchId == null || _isRecoveringConnection) {
+      return;
+    }
+
+    _isRecoveringConnection = true;
+    setState(() {
+      _status = PlayQueueStatus.reconnecting;
+      _isMovePending = false;
+      _pendingCardId = null;
+      _moveFeedback = null;
+    });
+
+    try {
+      await _matchDataSubscription?.cancel();
+      final socket = widget.nakamaService.realtimeSocket(widget.nakamaSession);
+      _socket = socket;
+      _joiningMatchId = matchId;
+      _subscribeToMatchData(socket);
+
+      final match = await widget.nakamaService.joinAuthoritativeMatch(
+        socket: socket,
+        matchId: matchId,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _matchId = match.matchId;
+        _joiningMatchId = null;
+        // The resync opcode can arrive before joinMatch completes.
+        if (_status == PlayQueueStatus.reconnecting) {
+          _status = PlayQueueStatus.waitingForInitialState;
+        }
+      });
+    } catch (error) {
+      _joiningMatchId = null;
+      debugPrint('Could not reconnect to match: $error');
+      _setFailure('Could not reconnect to the match.');
+    } finally {
+      _isRecoveringConnection = false;
     }
   }
 
@@ -312,6 +365,8 @@ class _PlayPageState extends State<PlayPage> {
         return 'Joining match';
       case PlayQueueStatus.waitingForInitialState:
         return 'Preparing game';
+      case PlayQueueStatus.reconnecting:
+        return 'Reconnecting to match';
       case PlayQueueStatus.ready:
         return 'Game ready';
       case PlayQueueStatus.failed:
@@ -329,6 +384,8 @@ class _PlayPageState extends State<PlayPage> {
         return 'An opponent was found. Joining the authoritative match...';
       case PlayQueueStatus.waitingForInitialState:
         return 'Waiting for Nakama to send your private starting hand.';
+      case PlayQueueStatus.reconnecting:
+        return 'Restoring your authoritative game state...';
       case PlayQueueStatus.ready:
         return 'Your authoritative game state has arrived.';
       case PlayQueueStatus.failed:
@@ -342,6 +399,7 @@ class _PlayPageState extends State<PlayPage> {
       case PlayQueueStatus.searching:
       case PlayQueueStatus.joiningMatch:
       case PlayQueueStatus.waitingForInitialState:
+      case PlayQueueStatus.reconnecting:
         return const SizedBox.square(
           dimension: 34,
           child: CircularProgressIndicator(strokeWidth: 3),

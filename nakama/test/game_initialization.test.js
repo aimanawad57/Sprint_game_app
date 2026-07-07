@@ -271,6 +271,112 @@ test("match lifecycle sends connection changes before private matchStarted event
     calls.filter((call) => call.opcode === runtime.ServerOpcode.MatchStarted).length,
     2
   );
+  const resyncCalls = calls.filter(
+    (call) => call.opcode === runtime.ServerOpcode.StateUpdate
+  );
+  assert.equal(resyncCalls.length, 1);
+  assert.strictEqual(resyncCalls[0].presences[0], presenceA);
+  assert.deepEqual(
+    normalize(resyncCalls[0].data.myHand),
+    normalize(state.players["player-a"].hand)
+  );
+  assert.equal(resyncCalls[0].data.stateVersion, 1);
+});
+
+test("reconnection replaces the presence and ignores a delayed old-session leave", () => {
+  const state = createInitializedState(runtime);
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    },
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+  const oldPresence = {
+    userId: "player-a",
+    sessionId: "player-a-old-session"
+  };
+  const newPresence = {
+    userId: "player-a",
+    sessionId: "player-a-new-session"
+  };
+  state.presences["player-a"] = oldPresence;
+  state.presences["player-b"] = {
+    userId: "player-b",
+    sessionId: "player-b-session"
+  };
+  const cardsBeforeReconnect = normalize(collectStateCards(state));
+  const versionBeforeReconnect = state.stateVersion;
+
+  runtime.sprintMatchJoin(
+    null,
+    logger,
+    null,
+    dispatcher,
+    10,
+    state,
+    [newPresence]
+  );
+  runtime.sprintMatchLeave(
+    null,
+    logger,
+    null,
+    dispatcher,
+    11,
+    state,
+    [oldPresence]
+  );
+
+  assert.strictEqual(state.presences["player-a"], newPresence);
+  assert.equal(state.players["player-a"].connected, true);
+  assert.equal(state.stateVersion, versionBeforeReconnect);
+  assert.deepEqual(normalize(collectStateCards(state)), cardsBeforeReconnect);
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.ConnectionChanged,
+    runtime.ServerOpcode.StateUpdate
+  ]);
+  assert.strictEqual(calls[1].presences[0], newPresence);
+});
+
+test("finished matches resynchronize privately without persisting results twice", () => {
+  const state = createInitializedState(runtime);
+  const dispatcherCalls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      dispatcherCalls.push({opcode, data: JSON.parse(data), presences});
+    },
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+  const reconnectingPresence = {
+    userId: "player-a",
+    sessionId: "finished-reconnect-session"
+  };
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.resultPersisted = true;
+  state.resultPersistencePending = false;
+  const versionBeforeReconnect = state.stateVersion;
+
+  runtime.sprintMatchJoin(
+    null,
+    logger,
+    null,
+    dispatcher,
+    20,
+    state,
+    [reconnectingPresence]
+  );
+
+  const update = dispatcherCalls.find(
+    (call) => call.opcode === runtime.ServerOpcode.StateUpdate
+  );
+  assert.ok(update);
+  assert.strictEqual(update.presences[0], reconnectingPresence);
+  assert.equal(update.data.status, runtime.MatchStatus.Finished);
+  assert.equal(update.data.winnerId, "player-a");
+  assert.equal(update.data.stateVersion, versionBeforeReconnect);
+  assert.equal(state.resultPersisted, true);
+  assert.equal(state.resultPersistencePending, false);
 });
 
 test("match lifecycle rejects users outside canonical player order", () => {

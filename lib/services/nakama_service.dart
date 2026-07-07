@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:nakama/nakama.dart' as nakama;
@@ -18,6 +19,10 @@ class NakamaService {
 
   final nakama.NakamaBaseClient client;
   nakama.NakamaWebsocketClient? _socket;
+  final StreamController<void> _realtimeDisconnectController =
+      StreamController<void>.broadcast();
+
+  Stream<void> get realtimeDisconnects => _realtimeDisconnectController.stream;
 
   Future<nakama.Session> authenticateWithGoogle(String idToken) {
     return client.authenticateGoogle(token: idToken);
@@ -37,13 +42,27 @@ class NakamaService {
   nakama.NakamaWebsocketClient realtimeSocket(nakama.Session session) {
     // A websocket is the realtime connection Nakama uses for matchmaking,
     // match messages, presence, and other live game features.
-    return _socket ??= nakama.NakamaWebsocketClient.init(
+    final existingSocket = _socket;
+    if (existingSocket != null) {
+      return existingSocket;
+    }
+
+    late final nakama.NakamaWebsocketClient createdSocket;
+    createdSocket = nakama.NakamaWebsocketClient.init(
       key: 'sprint-realtime',
       host: nakamaHost,
       port: nakamaHttpPort,
       ssl: nakamaUseSsl,
       token: session.token,
+      onDone: () {
+        if (identical(_socket, createdSocket)) {
+          _socket = null;
+          _realtimeDisconnectController.add(null);
+        }
+      },
     );
+    _socket = createdSocket;
+    return createdSocket;
   }
 
   Future<nakama.MatchmakerTicket> joinQuickplayQueue(

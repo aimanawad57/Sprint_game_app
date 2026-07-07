@@ -159,6 +159,20 @@ function sendMoveRejected(
   );
 }
 
+function sendPlayerStateView(
+  dispatcher: nkruntime.MatchDispatcher,
+  state: SprintMatchState,
+  userId: string,
+  presence: nkruntime.Presence,
+  opcode: ServerOpcode
+): void {
+  dispatcher.broadcastMessage(
+    opcode,
+    JSON.stringify(buildPlayerStateView(state, userId)),
+    [presence]
+  );
+}
+
 function resolveAndBroadcastStuckState(
   dispatcher: nkruntime.MatchDispatcher,
   state: SprintMatchState,
@@ -250,6 +264,7 @@ function sprintMatchJoin(
   presences: nkruntime.Presence[]
 ): {state: SprintMatchState} {
   const changes: ConnectionChange[] = [];
+  const resyncPresences: nkruntime.Presence[] = [];
 
   presences.forEach((presence) => {
     const player = state.players[presence.userId];
@@ -261,12 +276,17 @@ function sprintMatchJoin(
       return;
     }
 
+    const gameWasAlreadyInitialized = state.status !== MatchStatus.Waiting;
     state.presences[presence.userId] = presence;
     player.connected = true;
     changes.push({
       userId: presence.userId,
       status: ConnectionStatus.Connected
     });
+
+    if (gameWasAlreadyInitialized) {
+      resyncPresences.push(presence);
+    }
   });
 
   broadcastConnectionChanged(dispatcher, state, changes);
@@ -295,6 +315,21 @@ function sprintMatchJoin(
     sendMatchStarted(dispatcher, state);
   }
 
+  resyncPresences.forEach((presence) => {
+    sendPlayerStateView(
+      dispatcher,
+      state,
+      presence.userId,
+      presence,
+      ServerOpcode.StateUpdate
+    );
+    logger.info(
+      "Resynchronized sprint player %s at version %d",
+      presence.userId,
+      state.stateVersion
+    );
+  });
+
   return {state: state};
 }
 
@@ -315,6 +350,19 @@ function sprintMatchLeave(
       logger.warn(
         "Ignored leaving presence for unknown sprint player: %s",
         presence.userId
+      );
+      return;
+    }
+
+    const currentPresence = state.presences[presence.userId];
+    if (
+      currentPresence &&
+      currentPresence.sessionId !== presence.sessionId
+    ) {
+      logger.info(
+        "Ignored stale sprint leave for player %s session %s",
+        presence.userId,
+        presence.sessionId
       );
       return;
     }

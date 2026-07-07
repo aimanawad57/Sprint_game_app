@@ -29,4 +29,5 @@ events. Flutter gameplay handling is intentionally deferred.
 - A version mismatch causes revalidation, not automatic rejection.
 - Presence-only connection changes do not increment the gameplay state version.
 - Initial dealing is complete when both expected players connect and establishes gameplay version `1`.
-- Reconnection never reshuffles, redeals, or sends a second `matchStarted` event.
+- Reconnection never reshuffles, redeals, or sends a second `matchStarted` event;
+  the rejoining player receives a targeted opcode `11` private state snapshot.

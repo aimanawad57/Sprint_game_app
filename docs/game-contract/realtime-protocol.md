@@ -98,6 +98,14 @@ Nakama sends a fresh private player view after every accepted move. Flutter
 replaces its local snapshot only from these authoritative messages and does not
 move or draw cards optimistically.
 
+Opcode `11` is also the reconnection resynchronization message. When a canonical
+player joins a match that is already active or finished, Nakama sends the
+current private player view only to that newly joined presence. Resynchronizing
+does not increment `stateVersion`, redeal cards, reshuffle piles, or resend
+`matchStarted`. A delayed leave event from an older socket session cannot mark
+the replacement session disconnected. Flutter accepts the equal-version
+snapshot because presence reconnection may not involve a gameplay-state change.
+
 ### Move rejection - opcode 12
 
 ```json
