@@ -84,8 +84,8 @@ class _MainPageState extends State<MainPage> {
     ).showSnackBar(SnackBar(content: Text('$featureName will be added later')));
   }
 
-  void _openPlayPage() {
-    Navigator.of(context).push(
+  Future<void> _openPlayPage() async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) {
           return PlayPage(
@@ -95,6 +95,12 @@ class _MainPageState extends State<MainPage> {
         },
       ),
     );
+
+    if (!mounted) return;
+    setState(() {
+      _profileStatus = ProfileStatus.loading;
+    });
+    await _loadOrCreatePlayerProfile();
   }
 
   void _openProfilePage() {

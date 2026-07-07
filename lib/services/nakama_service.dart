@@ -125,7 +125,7 @@ class NakamaService {
           key: playerProfileKey,
           value: jsonEncode(profile.toJson()),
           permissionRead: nakama.StorageReadPermission.ownerRead,
-          permissionWrite: nakama.StorageWritePermission.ownerWrite,
+          permissionWrite: nakama.StorageWritePermission.noWrite,
         ),
       ],
     );

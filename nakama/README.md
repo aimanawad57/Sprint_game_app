@@ -41,6 +41,8 @@ The test suite validates the runtime catalog against the reviewed CSV, initial
 card distribution, privacy of player views, one-time match initialization, and
 authoritative move processing. It also covers stuck detection, separate center-
 pile resets, repeated stuck checks, and the deferred single-card-pile case.
+Finished matches also update both server-authoritative player profiles on the
+tick after the final realtime state is sent.
 
 ## Verify RPC
 

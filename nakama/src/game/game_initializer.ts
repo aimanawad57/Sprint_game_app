@@ -123,7 +123,8 @@ function assertInitializedCardState(state: SprintMatchState): void {
 
 function initializeGameState(
   state: SprintMatchState,
-  random: RandomSource = Math.random
+  random: RandomSource = Math.random,
+  nowMs: number = Date.now()
 ): boolean {
   if (state.status !== MatchStatus.Waiting || !bothPlayersConnected(state)) {
     return false;
@@ -156,6 +157,10 @@ function initializeGameState(
   state.status = MatchStatus.Active;
   state.stateVersion = 1;
   state.winnerId = null;
+  state.startedAtMs = nowMs;
+  state.endedAtMs = null;
+  state.resultPersistencePending = false;
+  state.resultPersisted = false;
 
   assertInitializedCardState(state);
   return true;

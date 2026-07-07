@@ -56,7 +56,11 @@ function createWaitingMatchState(
       pile_2: []
     },
     stateVersion: 0,
-    winnerId: null
+    winnerId: null,
+    startedAtMs: null,
+    endedAtMs: null,
+    resultPersistencePending: false,
+    resultPersisted: false
   };
 }
 
@@ -344,6 +348,21 @@ function sprintMatchLoop(
   state: SprintMatchState,
   messages: nkruntime.MatchMessage[]
 ): {state: SprintMatchState} {
+  if (state.resultPersistencePending && !state.resultPersisted) {
+    try {
+      persistPendingMatchResult(state, nk);
+      logger.info(
+        "Persisted sprint match result for winner %s",
+        state.winnerId || "unknown"
+      );
+    } catch (error) {
+      logger.error(
+        "Could not persist sprint match result; retrying next tick: %s",
+        error
+      );
+    }
+  }
+
   messages.forEach((message) => {
     if (message.opCode !== ClientOpcode.SubmitMove) {
       return;

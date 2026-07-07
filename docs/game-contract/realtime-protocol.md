@@ -158,3 +158,16 @@ This permits a valid move when an opponent changed only the other center pile.
 Presence-only changes do not increment `stateVersion`. Connecting or
 disconnecting does not move cards and must not make a submitted gameplay move
 stale. Initial card dealing will still establish gameplay version `1`.
+
+## Match-result statistics
+
+When a player empties both their hand and private deck, Nakama sends opcode
+`14` before scheduling profile persistence for the following match tick. Both
+profiles increment `gamesPlayed`; the winner increments `wins`, the loser
+increments `losses`, and the winner's `bestTimeMs` becomes the lower of its
+existing value and the authoritative match duration.
+
+Both profile updates use one atomic Nakama storage operation. Match-state
+guards prevent the same result from being applied twice, and a failed write
+remains pending for retry on a later tick. Profile objects are owner-readable
+but client read-only so gameplay statistics remain server-authoritative.

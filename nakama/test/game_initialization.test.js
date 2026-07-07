@@ -22,6 +22,7 @@ function loadRuntimeForTest() {
     "reshuffleCenterPiles," +
     "resolveStuckState," +
     "resolveAndBroadcastStuckState," +
+    "persistPendingMatchResult," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
     "sprintMatchLeave," +
@@ -603,4 +604,207 @@ test("match layer sends targeted opcode 13 views after every reset", () => {
   assert.deepEqual(calls.map((call) => call.data.stateVersion), [8, 8, 9, 9]);
   assert.equal(calls.every((call) => call.presences.length === 1), true);
   assert.notDeepEqual(calls[0].data.myHand, calls[1].data.myHand);
+});
+
+function finishedStateForStatistics(runtime) {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.startedAtMs = 1000;
+  state.endedAtMs = 6000;
+  state.resultPersistencePending = true;
+  state.resultPersisted = false;
+  return state;
+}
+
+function storedProfile(userId, version, value) {
+  return {
+    collection: "player",
+    key: "profile",
+    userId,
+    version,
+    permissionRead: 2,
+    permissionWrite: 1,
+    createTime: 1,
+    updateTime: 1,
+    value
+  };
+}
+
+test("game initialization records timing and resets persistence guards", () => {
+  const state = createConnectedWaitingState(runtime);
+  runtime.initializeGameState(state, () => 0, 123456);
+
+  assert.equal(state.startedAtMs, 123456);
+  assert.equal(state.endedAtMs, null);
+  assert.equal(state.resultPersistencePending, false);
+  assert.equal(state.resultPersisted, false);
+});
+
+test("profile persistence atomically updates winner, loser, and best time once", () => {
+  const state = finishedStateForStatistics(runtime);
+  let reads = 0;
+  const updates = [];
+  const nk = {
+    storageRead() {
+      reads += 1;
+      return [
+        storedProfile("player-a", "winner-version", {
+          gamesPlayed: 2,
+          wins: 1,
+          losses: 1,
+          bestTimeMs: 7000,
+          createdAt: "2026-01-01T00:00:00.000Z"
+        }),
+        storedProfile("player-b", "loser-version", {
+          gamesPlayed: 4,
+          wins: 3,
+          losses: 1,
+          bestTimeMs: null,
+          createdAt: "2026-01-02T00:00:00.000Z"
+        })
+      ];
+    },
+    multiUpdate(accountUpdates, storageWrites, storageDeletes, walletUpdates) {
+      updates.push({accountUpdates, storageWrites, storageDeletes, walletUpdates});
+      return {storageWriteAcks: [], walletUpdateAcks: []};
+    }
+  };
+
+  assert.equal(runtime.persistPendingMatchResult(state, nk), true);
+  assert.equal(state.resultPersisted, true);
+  assert.equal(state.resultPersistencePending, false);
+  assert.equal(reads, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].accountUpdates, null);
+  assert.equal(updates[0].storageDeletes, null);
+  assert.equal(updates[0].walletUpdates, null);
+
+  const winnerWrite = updates[0].storageWrites.find(
+    (write) => write.userId === "player-a"
+  );
+  const loserWrite = updates[0].storageWrites.find(
+    (write) => write.userId === "player-b"
+  );
+  assert.deepEqual(normalize(winnerWrite.value), {
+    gamesPlayed: 3,
+    wins: 2,
+    losses: 1,
+    bestTimeMs: 5000,
+    createdAt: "2026-01-01T00:00:00.000Z"
+  });
+  assert.deepEqual(normalize(loserWrite.value), {
+    gamesPlayed: 5,
+    wins: 3,
+    losses: 2,
+    bestTimeMs: null,
+    createdAt: "2026-01-02T00:00:00.000Z"
+  });
+  assert.equal(winnerWrite.version, "winner-version");
+  assert.equal(loserWrite.version, "loser-version");
+  assert.equal(winnerWrite.permissionWrite, 0);
+  assert.equal(loserWrite.permissionWrite, 0);
+
+  assert.equal(runtime.persistPendingMatchResult(state, nk), false);
+  assert.equal(reads, 1);
+  assert.equal(updates.length, 1);
+});
+
+test("profile persistence creates missing profiles and preserves a faster best time", () => {
+  const state = finishedStateForStatistics(runtime);
+  const writes = [];
+  const nk = {
+    storageRead() {
+      return [
+        storedProfile("player-a", "winner-version", {
+          gamesPlayed: 8,
+          wins: 5,
+          losses: 3,
+          bestTimeMs: 3000,
+          createdAt: "created"
+        })
+      ];
+    },
+    multiUpdate(_accounts, storageWrites) {
+      writes.push(...storageWrites);
+      return {storageWriteAcks: [], walletUpdateAcks: []};
+    }
+  };
+
+  runtime.persistPendingMatchResult(state, nk);
+
+  const winnerWrite = writes.find((write) => write.userId === "player-a");
+  const loserWrite = writes.find((write) => write.userId === "player-b");
+  assert.equal(winnerWrite.value.bestTimeMs, 3000);
+  assert.equal(loserWrite.value.gamesPlayed, 1);
+  assert.equal(loserWrite.value.losses, 1);
+  assert.equal(loserWrite.version, undefined);
+  assert.equal(loserWrite.permissionRead, 1);
+  assert.equal(loserWrite.permissionWrite, 0);
+});
+
+test("failed profile persistence remains pending for a later tick", () => {
+  const state = finishedStateForStatistics(runtime);
+  const nk = {
+    storageRead() {
+      return [];
+    },
+    multiUpdate() {
+      throw new Error("temporary storage failure");
+    }
+  };
+
+  assert.throws(
+    () => runtime.persistPendingMatchResult(state, nk),
+    /temporary storage failure/
+  );
+  assert.equal(state.resultPersistencePending, true);
+  assert.equal(state.resultPersisted, false);
+});
+
+test("game-ended view is sent before statistics persist on the following tick", () => {
+  const state = createInitializedState(runtime);
+  const player = state.players["player-a"];
+  player.hand = [card("last_card", runtime.CardColor.Red, runtime.CardShape.Star, 1)];
+  player.deck = [];
+  state.startedAtMs = 1000;
+  state.centerPiles.pile_1 = [
+    card("pile_top", runtime.CardColor.Red, runtime.CardShape.Sun, 6)
+  ];
+  const broadcasts = [];
+  let profileWrites = 0;
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      broadcasts.push({opcode, data: JSON.parse(data), presences});
+    }
+  };
+  const nk = {
+    storageRead() {
+      return [];
+    },
+    multiUpdate() {
+      profileWrites += 1;
+      return {storageWriteAcks: [], walletUpdateAcks: []};
+    }
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+
+  runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, [
+    submitMoveMessage(runtime, "player-a", {
+      card_id: "last_card",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion
+    })
+  ]);
+
+  assert.deepEqual(broadcasts.map((call) => call.opcode), [
+    runtime.ServerOpcode.GameEnded,
+    runtime.ServerOpcode.GameEnded
+  ]);
+  assert.equal(profileWrites, 0);
+  assert.equal(state.resultPersistencePending, true);
+
+  runtime.sprintMatchLoop(null, logger, nk, dispatcher, 2, state, []);
+  assert.equal(profileWrites, 1);
+  assert.equal(state.resultPersisted, true);
 });

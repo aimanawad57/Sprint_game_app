@@ -22,4 +22,8 @@ type SprintMatchState = {
   };
   stateVersion: number;
   winnerId: string | null;
+  startedAtMs: number | null;
+  endedAtMs: number | null;
+  resultPersistencePending: boolean;
+  resultPersisted: boolean;
 };

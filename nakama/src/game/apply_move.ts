@@ -200,11 +200,14 @@ function drawReplacementIfAvailable(player: PlayerMatchState): void {
 
 function updateWinnerIfNeeded(
   state: SprintMatchState,
-  player: PlayerMatchState
+  player: PlayerMatchState,
+  nowMs: number
 ): boolean {
   if (player.hand.length === 0 && player.deck.length === 0) {
     state.status = MatchStatus.Finished;
     state.winnerId = player.userId;
+    state.endedAtMs = nowMs;
+    state.resultPersistencePending = true;
     return true;
   }
 
@@ -214,7 +217,8 @@ function updateWinnerIfNeeded(
 function applySubmitMove(
   state: SprintMatchState,
   sender: nkruntime.Presence | null,
-  data: ArrayBuffer | string | null
+  data: ArrayBuffer | string | null,
+  nowMs: number = Date.now()
 ): ApplyMoveResult {
   const payload = parseSubmitMovePayload(data);
   if (isMoveRejectedPayload(payload)) {
@@ -284,6 +288,6 @@ function applySubmitMove(
   return {
     accepted: true,
     playerId: player.userId,
-    gameEnded: updateWinnerIfNeeded(state, player)
+    gameEnded: updateWinnerIfNeeded(state, player, nowMs)
   };
 }
