@@ -25,10 +25,21 @@ class PlayPage extends StatefulWidget {
     super.key,
     required this.nakamaService,
     required this.nakamaSession,
+    this.directMatchId,
+    this.displayCode,
   });
 
   final NakamaService nakamaService;
   final nakama.Session nakamaSession;
+
+  /// When set, the page joins this match directly instead of using the
+  /// quickplay matchmaker. Used by the create/join-by-code flow.
+  final String? directMatchId;
+
+  /// A code to show while waiting for the opponent to redeem it. Only
+  /// meaningful when this client created the match (paired with
+  /// [directMatchId]).
+  final String? displayCode;
 
   @override
   State<PlayPage> createState() => _PlayPageState();
@@ -58,7 +69,13 @@ class _PlayPageState extends State<PlayPage> {
     super.initState();
     _socketDisconnectSubscription = widget.nakamaService.realtimeDisconnects
         .listen((_) => unawaited(_recoverMatchConnection()));
-    _startMatchmaking();
+
+    final directMatchId = widget.directMatchId;
+    if (directMatchId != null) {
+      _joinDirectMatch(directMatchId);
+    } else {
+      _startMatchmaking();
+    }
   }
 
   @override
@@ -111,6 +128,41 @@ class _PlayPageState extends State<PlayPage> {
     } catch (error) {
       debugPrint('Could not start matchmaking: $error');
       _setFailure('Could not start matchmaking.');
+    }
+  }
+
+  Future<void> _joinDirectMatch(String matchId) async {
+    try {
+      final socket = widget.nakamaService.realtimeSocket(widget.nakamaSession);
+      _socket = socket;
+      _joiningMatchId = matchId;
+
+      // Subscribe before joining so a fast match-started message cannot be
+      // missed while joinAuthoritativeMatch is still completing.
+      _subscribeToMatchData(socket);
+
+      if (!mounted) return;
+      setState(() {
+        _status = PlayQueueStatus.joiningMatch;
+      });
+
+      final match = await widget.nakamaService.joinAuthoritativeMatch(
+        socket: socket,
+        matchId: matchId,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _matchId = match.matchId;
+        _joiningMatchId = null;
+        if (_gameState == null) {
+          _status = PlayQueueStatus.waitingForInitialState;
+        }
+      });
+    } catch (error) {
+      _joiningMatchId = null;
+      debugPrint('Could not join match: $error');
+      _setFailure('Could not join the match.');
     }
   }
 
@@ -364,7 +416,9 @@ class _PlayPageState extends State<PlayPage> {
       case PlayQueueStatus.joiningMatch:
         return 'Joining match';
       case PlayQueueStatus.waitingForInitialState:
-        return 'Preparing game';
+        return widget.displayCode != null
+            ? 'Waiting for opponent'
+            : 'Preparing game';
       case PlayQueueStatus.reconnecting:
         return 'Reconnecting to match';
       case PlayQueueStatus.ready:
@@ -383,7 +437,9 @@ class _PlayPageState extends State<PlayPage> {
       case PlayQueueStatus.joiningMatch:
         return 'An opponent was found. Joining the authoritative match...';
       case PlayQueueStatus.waitingForInitialState:
-        return 'Waiting for Nakama to send your private starting hand.';
+        return widget.displayCode != null
+            ? 'Share the code below with your opponent to start the match.'
+            : 'Waiting for Nakama to send your private starting hand.';
       case PlayQueueStatus.reconnecting:
         return 'Restoring your authoritative game state...';
       case PlayQueueStatus.ready:
@@ -450,6 +506,10 @@ class _PlayPageState extends State<PlayPage> {
                       style: Theme.of(context).textTheme.bodyLarge,
                     ),
                     const SizedBox(height: 32),
+                    if (widget.displayCode != null) ...[
+                      _MatchCodeDisplay(code: widget.displayCode!),
+                      const SizedBox(height: 32),
+                    ],
                     if (_ticket != null)
                       _InfoRow(label: 'Queue ticket', value: _ticket!),
                     if (_matchId != null)
@@ -468,6 +528,42 @@ class _PlayPageState extends State<PlayPage> {
                   ],
                 ),
               ),
+      ),
+    );
+  }
+}
+
+class _MatchCodeDisplay extends StatelessWidget {
+  const _MatchCodeDisplay({required this.code});
+
+  final String code;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Text(
+            'Match code',
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            code,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              letterSpacing: 6,
+            ),
+          ),
+        ],
       ),
     );
   }

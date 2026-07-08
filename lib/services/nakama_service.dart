@@ -5,6 +5,7 @@ import 'package:nakama/nakama.dart' as nakama;
 
 import '../config/nakama_config.dart';
 import '../config/game_protocol.dart';
+import '../models/created_match_by_code.dart';
 import '../models/game/game_move.dart';
 import '../models/player_profile.dart';
 
@@ -37,6 +38,38 @@ class NakamaService {
 
   Future<void> checkBackend(nakama.Session session) async {
     await client.rpc(session: session, id: 'healthcheck', payload: '');
+  }
+
+  Future<CreatedMatchByCode> createMatchByCode(nakama.Session session) async {
+    final response = await client.rpc(
+      session: session,
+      id: 'create_match_by_code',
+      payload: '',
+    );
+    if (response == null) {
+      throw Exception('The server did not return a match code.');
+    }
+    final json = jsonDecode(response) as Map<String, dynamic>;
+    return CreatedMatchByCode(
+      code: json['code'] as String,
+      matchId: json['matchId'] as String,
+    );
+  }
+
+  Future<String> joinMatchByCode({
+    required nakama.Session session,
+    required String code,
+  }) async {
+    final response = await client.rpc(
+      session: session,
+      id: 'join_match_by_code',
+      payload: jsonEncode({'code': code}),
+    );
+    if (response == null) {
+      throw Exception('The server did not return a match.');
+    }
+    final json = jsonDecode(response) as Map<String, dynamic>;
+    return json['matchId'] as String;
   }
 
   nakama.NakamaWebsocketClient realtimeSocket(nakama.Session session) {
