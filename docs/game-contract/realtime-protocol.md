@@ -180,6 +180,11 @@ stale. Initial card dealing will still establish gameplay version `1`.
 
 ## Match-result statistics
 
+Flutter loads the current player profile through authenticated RPC
+`get_or_create_profile`. The RPC reads `player/profile` for `ctx.userId`,
+creates a default server-owned profile when missing, and returns the profile
+JSON. Clients do not write profile storage directly.
+
 When a player empties both their hand and private deck, Nakama sends opcode
 `14` before scheduling profile persistence for the following match tick. Both
 profiles increment `gamesPlayed`; the winner increments `wins`, the loser

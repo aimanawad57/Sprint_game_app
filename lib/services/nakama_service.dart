@@ -152,36 +152,15 @@ class NakamaService {
   Future<PlayerProfile> loadOrCreatePlayerProfile(
     nakama.Session session,
   ) async {
-    final objects = await client.readStorageObjects(
+    final response = await client.rpc(
       session: session,
-      objectIds: const [
-        nakama.StorageObjectId(
-          collection: playerProfileCollection,
-          key: playerProfileKey,
-        ),
-      ],
+      id: 'get_or_create_profile',
+      payload: '',
     );
-
-    if (objects.isNotEmpty) {
-      final json = jsonDecode(objects.first.value) as Map<String, dynamic>;
-      return PlayerProfile.fromJson(json);
+    if (response == null) {
+      throw Exception('The server did not return a player profile.');
     }
-
-    final profile = PlayerProfile.createDefault();
-
-    await client.writeStorageObjects(
-      session: session,
-      objects: [
-        nakama.StorageObjectWrite(
-          collection: playerProfileCollection,
-          key: playerProfileKey,
-          value: jsonEncode(profile.toJson()),
-          permissionRead: nakama.StorageReadPermission.ownerRead,
-          permissionWrite: nakama.StorageWritePermission.noWrite,
-        ),
-      ],
-    );
-
-    return profile;
+    final json = jsonDecode(response) as Map<String, dynamic>;
+    return PlayerProfile.fromJson(json);
   }
 }

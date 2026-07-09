@@ -23,6 +23,7 @@ function loadRuntimeForTest() {
     "resolveStuckState," +
     "resolveAndBroadcastStuckState," +
     "persistPendingMatchResult," +
+    "rpcGetOrCreateProfile," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
     "sprintMatchLeave," +
@@ -1115,6 +1116,89 @@ test("failed profile persistence remains pending for a later tick", () => {
   );
   assert.equal(state.resultPersistencePending, true);
   assert.equal(state.resultPersisted, false);
+});
+
+test("get_or_create_profile returns an existing owner profile", () => {
+  const profile = {
+    gamesPlayed: 7,
+    wins: 4,
+    losses: 3,
+    bestTimeMs: 2500,
+    createdAt: "2026-01-01T00:00:00.000Z"
+  };
+  let writes = 0;
+  const nk = {
+    storageRead(reads) {
+      assert.deepEqual(normalize(reads), [
+        {
+          collection: "player",
+          key: "profile",
+          userId: "player-a"
+        }
+      ]);
+      return [
+        storedProfile("player-a", "profile-version", profile)
+      ];
+    },
+    storageWrite() {
+      writes += 1;
+    }
+  };
+
+  const result = runtime.rpcGetOrCreateProfile(
+    {userId: "player-a"},
+    {info() {}},
+    nk,
+    ""
+  );
+
+  assert.deepEqual(JSON.parse(result), profile);
+  assert.equal(writes, 0);
+});
+
+test("get_or_create_profile creates a server-owned default profile when missing", () => {
+  const writes = [];
+  const nk = {
+    storageRead() {
+      return [];
+    },
+    storageWrite(requests) {
+      writes.push(...requests);
+    }
+  };
+
+  const result = runtime.rpcGetOrCreateProfile(
+    {userId: "player-a"},
+    {info() {}},
+    nk,
+    ""
+  );
+  const profile = JSON.parse(result);
+
+  assert.deepEqual(profile, {
+    gamesPlayed: 0,
+    wins: 0,
+    losses: 0,
+    bestTimeMs: null,
+    createdAt: profile.createdAt
+  });
+  assert.equal(typeof profile.createdAt, "string");
+  assert.equal(writes.length, 1);
+  assert.deepEqual(normalize(writes[0]), {
+    collection: "player",
+    key: "profile",
+    userId: "player-a",
+    value: profile,
+    permissionRead: 1,
+    permissionWrite: 0
+  });
+});
+
+test("get_or_create_profile requires an authenticated user", () => {
+  assert.throws(
+    () => runtime.rpcGetOrCreateProfile({}, {info() {}}, {}, ""),
+    /session is required/
+  );
 });
 
 test("game-ended view is sent before statistics persist on the following tick", () => {
