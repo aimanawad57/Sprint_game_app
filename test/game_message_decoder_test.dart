@@ -23,6 +23,7 @@ void main() {
         'pile_2': {'topCard': card('card_060')},
       },
       'winnerId': null,
+      'winnerName': null,
     };
   }
 

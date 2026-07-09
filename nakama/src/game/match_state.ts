@@ -8,6 +8,7 @@ enum MatchStatus {
 
 type PlayerMatchState = {
   userId: string;
+  displayName: string;
   hand: Card[];
   deck: Card[];
   connected: boolean;

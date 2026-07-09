@@ -57,4 +57,5 @@ type PlayerStateView = {
     pile_2: {topCard: Card};
   };
   winnerId: string | null;
+  winnerName: string | null;
 };

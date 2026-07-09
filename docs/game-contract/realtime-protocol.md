@@ -83,7 +83,8 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
       }
     }
   },
-  "winnerId": null
+  "winnerId": null,
+  "winnerName": null
 }
 ```
 
@@ -92,6 +93,10 @@ Opcode `10` (`matchStarted`) is implemented. Its initial payload uses
 26, opponent hand count of 3, and one public top card for each center pile.
 Nakama sends the payload separately to each player presence. It never includes
 the opponent hand, either private deck, or center-pile history.
+When the game is finished, `winnerId` contains the winner's stable user ID and
+`winnerName` contains the winner's Nakama account display name for UI
+rendering. If the account display name cannot be resolved, the backend falls
+back to the realtime presence username and then `"Player"`.
 
 Opcodes `11` (`stateUpdate`) and `14` (`gameEnded`) are also implemented.
 Nakama sends a fresh private player view after every accepted move. Flutter

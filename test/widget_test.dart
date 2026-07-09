@@ -8,6 +8,7 @@ import 'package:sprint_app/widgets/game_state_panel.dart';
 void main() {
   GameStateView buildState({
     String? winnerId,
+    String? winnerName,
     GameMatchStatus status = GameMatchStatus.active,
   }) {
     return GameStateView(
@@ -53,12 +54,15 @@ void main() {
         ),
       ),
       winnerId: winnerId,
+      winnerName: winnerName,
     );
   }
 
   Future<void> pumpPanel(
     WidgetTester tester, {
+    String currentUserId = 'player-a',
     String? winnerId,
+    String? winnerName,
     GameMatchStatus status = GameMatchStatus.active,
     MoveSubmitCallback? onSubmitMove,
     VoidCallback? onBack,
@@ -71,7 +75,12 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: GameStatePanel(
-            gameState: buildState(winnerId: winnerId, status: status),
+            gameState: buildState(
+              winnerId: winnerId,
+              winnerName: winnerName,
+              status: status,
+            ),
+            currentUserId: currentUserId,
             onSubmitMove: onSubmitMove ?? (_, _) {},
             onBack: onBack ?? () {},
             isSubmitting: isSubmitting,
@@ -106,12 +115,57 @@ void main() {
     expect(find.text('Winner'), findsNothing);
   });
 
-  testWidgets('displays a winner when supplied', (tester) async {
-    await pumpPanel(tester, winnerId: 'player-a');
-    await tester.scrollUntilVisible(find.text('player-a'), 200);
+  testWidgets('displays the winner username instead of the raw winner id', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      winnerId: 'player-a',
+      winnerName: 'Alice',
+    );
+    await tester.scrollUntilVisible(find.text('Alice'), 200);
 
     expect(find.text('Winner'), findsOneWidget);
-    expect(find.text('player-a'), findsOneWidget);
+    expect(find.text('Alice'), findsOneWidget);
+    expect(find.text('player-a'), findsNothing);
+  });
+
+  testWidgets('shows a winning result when the current user wins', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      winnerName: 'Alice',
+      currentUserId: 'player-a',
+    );
+
+    expect(find.text('Game finished'), findsOneWidget);
+    expect(find.text('You won'), findsOneWidget);
+    expect(
+      find.text('The match has ended. Move controls are disabled.'),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(find.text('Back to main menu'), 200);
+    expect(find.text('Back to main menu'), findsOneWidget);
+  });
+
+  testWidgets('shows a losing result when the opponent wins', (tester) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-b',
+      winnerName: 'Bob',
+      currentUserId: 'player-a',
+    );
+
+    expect(find.text('Game finished'), findsOneWidget);
+    expect(find.text('You lost'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Bob'), 200);
+    expect(find.text('Bob'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Back to main menu'), 200);
+    expect(find.text('Back to main menu'), findsOneWidget);
   });
 
   testWidgets('invokes the back callback', (tester) async {
@@ -178,7 +232,7 @@ void main() {
     expect(find.text('Game finished'), findsOneWidget);
     final handCard = find.text('red • star • 1');
     await tester.scrollUntilVisible(handCard, 150);
-    await tester.tap(handCard);
+    await tester.tap(handCard, warnIfMissed: false);
     await tester.pump();
 
     expect(find.byIcon(Icons.check_circle), findsNothing);

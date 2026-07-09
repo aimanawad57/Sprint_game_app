@@ -2,6 +2,55 @@ const invalidMatchParametersMessage =
   "expectedUserIds must contain exactly two distinct, non-empty user IDs";
 const unauthorizedJoinMessage = "This user was not assigned to this match.";
 
+function displayNameFromPresence(presence: nkruntime.Presence): string | null {
+  const username = presence.username;
+  if (typeof username === "string" && username.trim().length > 0) {
+    return username.trim();
+  }
+
+  return null;
+}
+
+function displayNameFromAccount(
+  nk: nkruntime.Nakama | null,
+  userId: string,
+  logger: nkruntime.Logger
+): string | null {
+  if (!nk) {
+    return null;
+  }
+
+  try {
+    const account = nk.accountGetId(userId);
+    const displayName = account && account.user && account.user.displayName;
+    if (typeof displayName === "string" && displayName.trim().length > 0) {
+      return displayName.trim();
+    }
+  } catch (error) {
+    logger.warn(
+      "Could not resolve sprint player display name for user %s: %s",
+      userId,
+      error
+    );
+  }
+
+  return null;
+}
+
+function resolvePlayerDisplayName(
+  nk: nkruntime.Nakama | null,
+  logger: nkruntime.Logger,
+  presence: nkruntime.Presence,
+  existingDisplayName?: string
+): string {
+  return (
+    displayNameFromAccount(nk, presence.userId, logger) ||
+    displayNameFromPresence(presence) ||
+    existingDisplayName ||
+    "Player"
+  );
+}
+
 function parsePlayerOrder(
   params: {[key: string]: any}
 ): [string, string] | null {
@@ -35,12 +84,14 @@ function createWaitingMatchState(
 
   players[playerAId] = {
     userId: playerAId,
+    displayName: "Player",
     hand: [],
     deck: [],
     connected: false
   };
   players[playerBId] = {
     userId: playerBId,
+    displayName: "Player",
     hand: [],
     deck: [],
     connected: false
@@ -72,6 +123,7 @@ function createOpenWaitingMatchState(creatorId: string): SprintMatchState {
 
   players[creatorId] = {
     userId: creatorId,
+    displayName: "Player",
     hand: [],
     deck: [],
     connected: false
@@ -324,6 +376,7 @@ function sprintMatchJoin(
       state.playerOrder[1] = presence.userId;
       state.players[presence.userId] = {
         userId: presence.userId,
+        displayName: resolvePlayerDisplayName(nk, logger, presence),
         hand: [],
         deck: [],
         connected: false
@@ -341,6 +394,12 @@ function sprintMatchJoin(
     }
 
     const gameWasAlreadyInitialized = state.status !== MatchStatus.Waiting;
+    player.displayName = resolvePlayerDisplayName(
+      nk,
+      logger,
+      presence,
+      player.displayName
+    );
     state.presences[presence.userId] = presence;
     player.connected = true;
     changes.push({

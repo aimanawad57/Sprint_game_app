@@ -61,10 +61,12 @@ function readDocumentedCatalog() {
 
 function createConnectedWaitingState(runtime) {
   const state = runtime.createWaitingMatchState(["player-a", "player-b"]);
+  state.players["player-a"].displayName = "Alice";
+  state.players["player-b"].displayName = "Bob";
   state.players["player-a"].connected = true;
   state.players["player-b"].connected = true;
-  state.presences["player-a"] = {userId: "player-a"};
-  state.presences["player-b"] = {userId: "player-b"};
+  state.presences["player-a"] = {userId: "player-a", username: "Alice"};
+  state.presences["player-b"] = {userId: "player-b", username: "Bob"};
   return state;
 }
 
@@ -251,6 +253,7 @@ test("private views expose only the viewer hand and public counts", () => {
   assert.deepEqual(normalize(viewA.centerPiles), normalize(viewB.centerPiles));
   assert.equal(viewA.stateVersion, 1);
   assert.equal(viewA.status, runtime.MatchStatus.Active);
+  assert.equal(viewA.winnerName, null);
 
   const originalStateColor = state.players["player-a"].hand[0].color;
   viewA.myHand[0].color = runtime.CardColor.Purple;
@@ -270,8 +273,8 @@ test("match lifecycle sends connection changes before private matchStarted event
     },
   };
   const logger = {info() {}, warn() {}, error() {}};
-  const presenceA = {userId: "player-a", sessionId: "session-a"};
-  const presenceB = {userId: "player-b", sessionId: "session-b"};
+  const presenceA = {userId: "player-a", sessionId: "session-a", username: "Alice"};
+  const presenceB = {userId: "player-b", sessionId: "session-b", username: "Bob"};
 
   runtime.sprintMatchJoin(null, logger, null, dispatcher, 1, state, [presenceA]);
   assert.equal(state.status, runtime.MatchStatus.Waiting);
@@ -302,6 +305,9 @@ test("match lifecycle sends connection changes before private matchStarted event
     normalize(startedB.data.myHand.map((card) => card.card_id)),
     normalize(state.players["player-b"].hand.map((card) => card.card_id))
   );
+  assert.equal(startedA.data.winnerName, null);
+  assert.equal(state.players["player-a"].displayName, "Alice");
+  assert.equal(state.players["player-b"].displayName, "Bob");
 
   const cardSnapshot = normalize(collectStateCards(state));
   runtime.sprintMatchLeave(null, logger, null, dispatcher, 3, state, [presenceA]);
@@ -322,6 +328,49 @@ test("match lifecycle sends connection changes before private matchStarted event
     normalize(state.players["player-a"].hand)
   );
   assert.equal(resyncCalls[0].data.stateVersion, 1);
+});
+
+test("player views use account display names instead of generated presence usernames", () => {
+  const state = runtime.createWaitingMatchState(["player-a", "player-b"]);
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    },
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {
+    accountGetId(userId) {
+      return {
+        user: {
+          displayName: userId === "player-a" ? "Mohammed" : "Aiman"
+        }
+      };
+    }
+  };
+  const presenceA = {
+    userId: "player-a",
+    sessionId: "session-a",
+    username: "KllCnnRBkQ"
+  };
+  const presenceB = {
+    userId: "player-b",
+    sessionId: "session-b",
+    username: "RandomUserName"
+  };
+
+  runtime.sprintMatchJoin(null, logger, nk, dispatcher, 1, state, [
+    presenceA,
+    presenceB
+  ]);
+
+  assert.equal(state.players["player-a"].displayName, "Mohammed");
+  assert.equal(state.players["player-b"].displayName, "Aiman");
+
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  const view = runtime.buildPlayerStateView(state, "player-b");
+  assert.equal(view.winnerName, "Mohammed");
 });
 
 test("reconnection replaces the presence and ignores a delayed old-session leave", () => {
@@ -415,6 +464,7 @@ test("finished matches resynchronize privately without persisting results twice"
   assert.strictEqual(update.presences[0], reconnectingPresence);
   assert.equal(update.data.status, runtime.MatchStatus.Finished);
   assert.equal(update.data.winnerId, "player-a");
+  assert.equal(update.data.winnerName, "Alice");
   assert.equal(update.data.stateVersion, versionBeforeReconnect);
   assert.equal(state.resultPersisted, true);
   assert.equal(state.resultPersistencePending, false);
@@ -1106,6 +1156,8 @@ test("game-ended view is sent before statistics persist on the following tick", 
     runtime.ServerOpcode.GameEnded,
     runtime.ServerOpcode.GameEnded
   ]);
+  assert.equal(broadcasts[0].data.winnerName, "Alice");
+  assert.equal(broadcasts[1].data.winnerName, "Alice");
   assert.equal(profileWrites, 0);
   assert.equal(state.resultPersistencePending, true);
 

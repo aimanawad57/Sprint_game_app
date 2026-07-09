@@ -7,7 +7,7 @@ void main() {
     return {'card_id': id, 'color': color, 'shape': shape, 'count': count};
   }
 
-  Map<String, dynamic> validState({Object? winnerId}) {
+  Map<String, dynamic> validState({Object? winnerId, Object? winnerName}) {
     return {
       'stateVersion': 1,
       'status': 'active',
@@ -24,6 +24,7 @@ void main() {
         'pile_2': {'topCard': card('card_060', 'purple', 'house', 5)},
       },
       'winnerId': winnerId,
+      'winnerName': winnerName,
     };
   }
 
@@ -40,11 +41,15 @@ void main() {
       expect(state.pile1.topCard.cardId, 'card_061');
       expect(state.pile2.topCard.cardId, 'card_060');
       expect(state.winnerId, isNull);
+      expect(state.winnerName, isNull);
     });
 
-    test('accepts a non-empty winner id', () {
-      final state = GameStateView.fromJson(validState(winnerId: 'player-a'));
+    test('accepts a non-empty winner id and winner name', () {
+      final state = GameStateView.fromJson(
+        validState(winnerId: 'player-a', winnerName: 'Alice'),
+      );
       expect(state.winnerId, 'player-a');
+      expect(state.winnerName, 'Alice');
     });
 
     test('creates an unmodifiable hand', () {
@@ -94,6 +99,10 @@ void main() {
       );
       expect(
         () => GameStateView.fromJson(validState(winnerId: '')),
+        throwsFormatException,
+      );
+      expect(
+        () => GameStateView.fromJson(validState(winnerName: '')),
         throwsFormatException,
       );
     });

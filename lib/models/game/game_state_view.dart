@@ -27,6 +27,7 @@ class GameStateView {
     required this.pile1,
     required this.pile2,
     required this.winnerId,
+    required this.winnerName,
   }) : myHand = List<GameCard>.unmodifiable(myHand);
 
   final int stateVersion;
@@ -38,6 +39,7 @@ class GameStateView {
   final CenterPileView pile1;
   final CenterPileView pile2;
   final String? winnerId;
+  final String? winnerName;
 
   factory GameStateView.fromJson(Map<String, dynamic> json) {
     final handJson = json['myHand'];
@@ -70,6 +72,13 @@ class GameStateView {
         'winnerId must be null or a non-empty string',
       );
     }
+    final winnerNameValue = json['winnerName'];
+    if (winnerNameValue != null &&
+        (winnerNameValue is! String || winnerNameValue.trim().isEmpty)) {
+      throw const FormatException(
+        'winnerName must be null or a non-empty string',
+      );
+    }
 
     return GameStateView(
       stateVersion: _nonNegativeInt(
@@ -97,6 +106,7 @@ class GameStateView {
         _requiredMap(centerPiles['pile_2'], fieldName: 'centerPiles.pile_2'),
       ),
       winnerId: winnerValue as String?,
+      winnerName: winnerNameValue as String?,
     );
   }
 }

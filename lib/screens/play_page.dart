@@ -506,6 +506,7 @@ class _PlayPageState extends State<PlayPage> {
         child: _status == PlayQueueStatus.ready && gameState != null
             ? GameStatePanel(
                 gameState: gameState,
+                currentUserId: widget.nakamaSession.userId,
                 onSubmitMove: _submitMove,
                 onBack: () => Navigator.of(context).pop(),
                 isSubmitting: _isMovePending,

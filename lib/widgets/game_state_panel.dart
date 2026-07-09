@@ -10,6 +10,7 @@ class GameStatePanel extends StatefulWidget {
   const GameStatePanel({
     super.key,
     required this.gameState,
+    required this.currentUserId,
     required this.onSubmitMove,
     required this.onBack,
     this.isSubmitting = false,
@@ -19,6 +20,7 @@ class GameStatePanel extends StatefulWidget {
   });
 
   final GameStateView gameState;
+  final String currentUserId;
   final MoveSubmitCallback onSubmitMove;
   final VoidCallback onBack;
   final bool isSubmitting;
@@ -68,6 +70,7 @@ class _GameStatePanelState extends State<GameStatePanel> {
   Widget build(BuildContext context) {
     final gameState = widget.gameState;
     final gameFinished = gameState.status == GameMatchStatus.finished;
+    final resultMessage = _finishedResultMessage(gameState);
 
     return ListView(
       padding: const EdgeInsets.all(24),
@@ -77,6 +80,10 @@ class _GameStatePanelState extends State<GameStatePanel> {
           style: Theme.of(context).textTheme.headlineSmall,
         ),
         const SizedBox(height: 16),
+        if (gameFinished) ...[
+          _GameResultPanel(message: resultMessage),
+          const SizedBox(height: 16),
+        ],
         _InfoRow(label: 'Status', value: gameState.status.name),
         _InfoRow(
           label: 'State version',
@@ -105,7 +112,9 @@ class _GameStatePanelState extends State<GameStatePanel> {
         Text('Center piles', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 4),
         Text(
-          !widget.movesEnabled
+          gameFinished
+              ? 'The match has ended. Move controls are disabled.'
+              : !widget.movesEnabled
               ? 'Moves are paused until both players are connected.'
               : _selectedCardId == null
               ? 'Select one of your cards, then select a center pile.'
@@ -154,17 +163,70 @@ class _GameStatePanelState extends State<GameStatePanel> {
             ],
           ),
         ],
-        if (gameState.winnerId case final winnerId?) ...[
+        if (gameState.winnerId != null) ...[
           const Divider(height: 32),
-          _InfoRow(label: 'Winner', value: winnerId),
+          _InfoRow(label: 'Winner', value: _winnerDisplayName(gameState)),
         ],
         const SizedBox(height: 24),
         OutlinedButton.icon(
           onPressed: widget.onBack,
-          icon: const Icon(Icons.arrow_back),
-          label: const Text('Back'),
+          icon: Icon(gameFinished ? Icons.home : Icons.arrow_back),
+          label: Text(gameFinished ? 'Back to main menu' : 'Back'),
         ),
       ],
+    );
+  }
+
+  String _finishedResultMessage(GameStateView gameState) {
+    final winnerId = gameState.winnerId;
+    if (winnerId == null) {
+      return 'Match finished';
+    }
+
+    return winnerId == widget.currentUserId ? 'You won' : 'You lost';
+  }
+
+  String _winnerDisplayName(GameStateView gameState) {
+    final winnerName = gameState.winnerName;
+    if (winnerName != null) {
+      return winnerName;
+    }
+
+    return gameState.winnerId == widget.currentUserId ? 'You' : 'Opponent';
+  }
+}
+
+class _GameResultPanel extends StatelessWidget {
+  const _GameResultPanel({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.primaryContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(Icons.emoji_events, color: colors.onPrimaryContainer),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: colors.onPrimaryContainer,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
