@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc",
     "type-check": "tsc --noEmit",
-    "test": "npm run build && node --test test/game_initialization.test.js"
+    "test": "npm run build && node --test test/game_initialization.test.js test/match_by_code.test.js"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

@@ -5,8 +5,8 @@ import 'package:nakama/nakama.dart' as nakama;
 import '../models/player_profile.dart';
 import '../services/nakama_service.dart';
 import '../widgets/backend_status_panel.dart';
+import 'create_join_match_screen.dart';
 import 'login_screen.dart';
-import 'play_page.dart';
 import 'profile_page.dart';
 
 enum BackendStatus { checking, connected, failed }
@@ -88,7 +88,7 @@ class _MainPageState extends State<MainPage> {
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) {
-          return PlayPage(
+          return CreateJoinMatchScreen(
             nakamaService: widget.nakamaService,
             nakamaSession: widget.nakamaSession,
           );
