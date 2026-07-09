@@ -26,14 +26,14 @@ void main() {
       }
     });
 
-    test('accepts every count from 1 through 6', () {
-      for (var count = 1; count <= 6; count++) {
+    test('accepts every count from 1 through 5', () {
+      for (var count = 1; count <= 5; count++) {
         expect(GameCard.fromJson(validCard(count: count)).count, count);
       }
     });
 
     test('rejects invalid counts', () {
-      for (final count in <Object?>[0, 7, 1.5, '1', null]) {
+      for (final count in <Object?>[0, 6, 1.5, '1', null]) {
         expect(
           () => GameCard.fromJson(validCard(count: count)),
           throwsFormatException,

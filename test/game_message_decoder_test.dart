@@ -15,12 +15,12 @@ void main() {
       'stateVersion': 1,
       'status': 'active',
       'myHand': [card('card_001')],
-      'myDeckCount': 27,
+      'myDeckCount': 26,
       'opponentHandCount': 3,
-      'opponentDeckCount': 27,
+      'opponentDeckCount': 26,
       'centerPiles': {
         'pile_1': {'topCard': card('card_061')},
-        'pile_2': {'topCard': card('card_062')},
+        'pile_2': {'topCard': card('card_060')},
       },
       'winnerId': null,
     };

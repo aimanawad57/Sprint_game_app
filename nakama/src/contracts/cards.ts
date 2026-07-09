@@ -10,10 +10,10 @@ enum CardColor {
 enum CardShape {
   Star = "star",
   Diamond = "diamond",
-  Heart = "heart",
-  Spiral = "spiral",
+  Tree = "tree",
+  House = "house",
   Circle = "circle",
-  Sun = "sun"
+  Flag = "flag"
 }
 
 type Card = {

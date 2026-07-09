@@ -1,6 +1,6 @@
 enum GameCardColor { red, orange, yellow, green, blue, purple }
 
-enum GameCardShape { star, diamond, heart, spiral, circle, sun }
+enum GameCardShape { star, diamond, tree, house, circle, flag }
 
 class GameCard {
   const GameCard({
@@ -22,8 +22,8 @@ class GameCard {
     }
 
     final count = json['count'];
-    if (count is! int || count < 1 || count > 6) {
-      throw const FormatException('count must be an integer from 1 to 6');
+    if (count is! int || count < 1 || count > 5) {
+      throw const FormatException('count must be an integer from 1 to 5');
     }
 
     return GameCard(

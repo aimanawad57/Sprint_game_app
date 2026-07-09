@@ -31,12 +31,12 @@ pile[pile.length - 1] = visible top card
 The authoritative Nakama match performs setup:
 
 ```text
-1. Copy all 62 catalog cards.
+1. Copy all 60 catalog cards.
 2. Shuffle the copy on the Nakama server.
 3. Pop 1 card into center pile 1.
 4. Pop 1 card into center pile 2.
-5. Give the next 30 cards to Player A.
-6. Give the remaining 30 cards to Player B.
+5. Give the next 29 cards to Player A.
+6. Give the remaining 29 cards to Player B.
 7. Pop 3 cards from Player A's private deck into Player A's hand.
 8. Pop 3 cards from Player B's private deck into Player B's hand.
 9. Set the initial state version to 1.
@@ -53,11 +53,11 @@ cannot reshuffle or redeal an active match.
 ```text
 Player A:
   hand: 3
-  private deck: 27
+  private deck: 26
 
 Player B:
   hand: 3
-  private deck: 27
+  private deck: 26
 
 Center pile 1: 1
 Center pile 2: 1
@@ -65,12 +65,12 @@ Center pile 2: 1
 
 ## Setup acceptance checks
 
-- Exactly 62 card IDs exist across all state locations.
+- Exactly 60 card IDs exist across all state locations.
 - Every catalog ID occurs exactly once.
 - Both hands contain exactly 3 cards.
-- Both private decks contain exactly 27 cards.
+- Both private decks contain exactly 26 cards.
 - Both center piles contain exactly 1 card.
-- The two center cards do not belong to either player's allocated 30 cards.
+- The two center cards do not belong to either player's allocated 29 cards.
 - Player A cannot receive Player B's hand or deck contents.
 - Player B cannot receive Player A's hand or deck contents.
 - Neither player receives the order of their own remaining private deck.

@@ -89,6 +89,47 @@ function card(id, color, shape, count) {
   return {card_id: id, color, shape, count};
 }
 
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+}
+
+function cardsMatchForTest(playedCard, topCard) {
+  return (
+    playedCard.color === topCard.color ||
+    playedCard.shape === topCard.shape ||
+    playedCard.count === topCard.count
+  );
+}
+
+function findLegalMove(state) {
+  const piles = [
+    [runtime.PileId.Pile1, state.centerPiles.pile_1.at(-1)],
+    [runtime.PileId.Pile2, state.centerPiles.pile_2.at(-1)]
+  ];
+
+  for (const userId of state.playerOrder) {
+    for (const handCard of state.players[userId].hand) {
+      for (const [pileId, topCard] of piles) {
+        if (cardsMatchForTest(handCard, topCard)) {
+          return {userId, cardId: handCard.card_id, pileId};
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function assertCardConservation(state) {
+  const cards = collectStateCards(state);
+  assert.equal(cards.length, 60);
+  assert.equal(new Set(cards.map((entry) => entry.card_id)).size, 60);
+}
+
 function submitMoveMessage(runtime, userId, payload) {
   return {
     opCode: runtime.ClientOpcode.SubmitMove,
@@ -107,7 +148,7 @@ test("catalog validation enforces size, IDs, attributes, and count", () => {
   assert.doesNotThrow(() => runtime.validateCardCatalog(runtime.CARD_CATALOG));
 
   const missingCard = normalize(runtime.CARD_CATALOG).slice(0, -1);
-  assert.throws(() => runtime.validateCardCatalog(missingCard), /expected 62 cards/);
+  assert.throws(() => runtime.validateCardCatalog(missingCard), /expected 60 cards/);
 
   const duplicateId = normalize(runtime.CARD_CATALOG);
   duplicateId[1].card_id = duplicateId[0].card_id;
@@ -122,15 +163,15 @@ test("catalog validation enforces size, IDs, attributes, and count", () => {
   assert.throws(() => runtime.validateCardCatalog(invalidShape), /invalid shape/);
 
   const invalidCount = normalize(runtime.CARD_CATALOG);
-  invalidCount[0].count = 7;
+  invalidCount[0].count = 6;
   assert.throws(() => runtime.validateCardCatalog(invalidCount), /invalid count/);
 });
 
 test("catalog validation allows duplicate attributes when IDs differ", () => {
   const catalog = normalize(runtime.CARD_CATALOG);
-  catalog[61].color = catalog[0].color;
-  catalog[61].shape = catalog[0].shape;
-  catalog[61].count = catalog[0].count;
+  catalog[59].color = catalog[0].color;
+  catalog[59].shape = catalog[0].shape;
+  catalog[59].count = catalog[0].count;
   assert.doesNotThrow(() => runtime.validateCardCatalog(catalog));
 });
 
@@ -170,15 +211,15 @@ test("initialization deals all cards once in canonical player order", () => {
   assert.equal(state.winnerId, null);
   assert.deepEqual(normalize(state.playerOrder), ["player-a", "player-b"]);
   assert.equal(state.players["player-a"].hand.length, 3);
-  assert.equal(state.players["player-a"].deck.length, 27);
+  assert.equal(state.players["player-a"].deck.length, 26);
   assert.equal(state.players["player-b"].hand.length, 3);
-  assert.equal(state.players["player-b"].deck.length, 27);
+  assert.equal(state.players["player-b"].deck.length, 26);
   assert.equal(state.centerPiles.pile_1.length, 1);
   assert.equal(state.centerPiles.pile_2.length, 1);
 
   const allCards = collectStateCards(state);
-  assert.equal(allCards.length, 62);
-  assert.equal(new Set(allCards.map((card) => card.card_id)).size, 62);
+  assert.equal(allCards.length, 60);
+  assert.equal(new Set(allCards.map((card) => card.card_id)).size, 60);
   assert.deepEqual(
     [...allCards.map((card) => card.card_id)].sort(),
     originalCatalog.map((card) => card.card_id).sort()
@@ -201,9 +242,9 @@ test("private views expose only the viewer hand and public counts", () => {
 
   assert.deepEqual(viewA.myHand.map((card) => card.card_id), playerAHandIds);
   assert.deepEqual(viewB.myHand.map((card) => card.card_id), playerBHandIds);
-  assert.equal(viewA.myDeckCount, 27);
+  assert.equal(viewA.myDeckCount, 26);
   assert.equal(viewA.opponentHandCount, 3);
-  assert.equal(viewA.opponentDeckCount, 27);
+  assert.equal(viewA.opponentDeckCount, 26);
   assert.equal("deck" in viewA, false);
   assert.equal("opponentHand" in viewA, false);
   assert.equal("opponentDeck" in viewA, false);
@@ -403,7 +444,7 @@ test("applySubmitMove accepts a legal move, draws replacement, and increments ve
   const playedCard = player.hand[0];
   const replacementCard = player.deck[player.deck.length - 1];
   state.centerPiles.pile_1 = [
-    card("pile_top", playedCard.color, runtime.CardShape.Sun, 6)
+    card("pile_top", playedCard.color, runtime.CardShape.Flag, 5)
   ];
   const beforeVersion = state.stateVersion;
 
@@ -424,7 +465,7 @@ test("applySubmitMove accepts a legal move, draws replacement, and increments ve
   assert.equal(player.hand.length, 3);
   assert.equal(player.hand.some((handCard) => handCard.card_id === playedCard.card_id), false);
   assert.equal(player.hand.some((handCard) => handCard.card_id === replacementCard.card_id), true);
-  assert.equal(player.deck.length, 26);
+  assert.equal(player.deck.length, 25);
 });
 
 test("applySubmitMove rejects inactive match, unknown player, missing card, bad pile, and mismatch", () => {
@@ -487,7 +528,7 @@ test("applySubmitMove rejects inactive match, unknown player, missing card, bad 
   );
 
   state.centerPiles.pile_1 = [
-    card("pile_top", runtime.CardColor.Purple, runtime.CardShape.Sun, 6)
+    card("pile_top", runtime.CardColor.Purple, runtime.CardShape.Flag, 5)
   ];
   player.hand[0] = card("unmatched", runtime.CardColor.Red, runtime.CardShape.Star, 1);
   assert.equal(
@@ -549,13 +590,71 @@ test("applySubmitMove rejects moves while either player is disconnected", () => 
   assert.equal(senderConnectionMissing.stateVersion, senderVersion);
 });
 
+test("stale moves are revalidated against the current authoritative pile", () => {
+  const stillLegal = createInitializedState(runtime);
+  const legalPlayer = stillLegal.players["player-a"];
+  const legalCard = legalPlayer.hand[0];
+  stillLegal.stateVersion = 9;
+  stillLegal.centerPiles.pile_1 = [
+    card("current_top", legalCard.color, runtime.CardShape.Flag, 5)
+  ];
+
+  const accepted = runtime.applySubmitMove(
+    stillLegal,
+    {userId: "player-a"},
+    JSON.stringify({
+      card_id: legalCard.card_id,
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: 8
+    })
+  );
+
+  assert.equal(accepted.accepted, true);
+  assert.equal(stillLegal.stateVersion, 10);
+
+  const noLongerLegal = createInitializedState(runtime);
+  noLongerLegal.stateVersion = 12;
+  noLongerLegal.players["player-a"].hand[0] = card(
+    "stale_card",
+    runtime.CardColor.Red,
+    runtime.CardShape.Star,
+    1
+  );
+  noLongerLegal.centerPiles.pile_1 = [
+    card(
+      "changed_top",
+      runtime.CardColor.Purple,
+      runtime.CardShape.Flag,
+      5
+    )
+  ];
+  const stateBeforeRejection = normalize(noLongerLegal);
+
+  const rejected = runtime.applySubmitMove(
+    noLongerLegal,
+    {userId: "player-a"},
+    JSON.stringify({
+      card_id: "stale_card",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: 11
+    })
+  );
+
+  assert.equal(rejected.accepted, false);
+  assert.equal(
+    rejected.rejection.reason,
+    runtime.MoveRejectionReason.CardDoesNotMatch
+  );
+  assert.deepEqual(normalize(noLongerLegal), stateBeforeRejection);
+});
+
 test("applySubmitMove ends the game when the last hand card is played with no deck", () => {
   const state = createInitializedState(runtime);
   const player = state.players["player-a"];
   player.hand = [card("last_card", runtime.CardColor.Red, runtime.CardShape.Star, 1)];
   player.deck = [];
   state.centerPiles.pile_1 = [
-    card("pile_top", runtime.CardColor.Red, runtime.CardShape.Sun, 6)
+    card("pile_top", runtime.CardColor.Red, runtime.CardShape.Flag, 5)
   ];
 
   const result = runtime.applySubmitMove(
@@ -574,12 +673,67 @@ test("applySubmitMove ends the game when the last hand card is played with no de
   assert.equal(state.winnerId, "player-a");
 });
 
+test("deterministic full matches finish while preserving every card", () => {
+  const seeds = Array.from({length: 100}, (_, index) => index + 1);
+  for (const seed of seeds) {
+    const random = seededRandom(seed);
+    const state = createConnectedWaitingState(runtime);
+    runtime.initializeGameState(state, random, 1000);
+    assertCardConservation(state);
+
+    let acceptedMoves = 0;
+    while (state.status === runtime.MatchStatus.Active && acceptedMoves < 100) {
+      let move = findLegalMove(state);
+      if (!move) {
+        const resetResult = runtime.resolveStuckState(
+          state,
+          () => assertCardConservation(state),
+          random
+        );
+        assert.equal(
+          resetResult.stillStuck,
+          false,
+          "seed " + seed + " produced an unresolved stuck match"
+        );
+        move = findLegalMove(state);
+      }
+
+      assert.ok(move, "seed " + seed + " must have a legal move");
+      const versionBeforeMove = state.stateVersion;
+      const result = runtime.applySubmitMove(
+        state,
+        {userId: move.userId},
+        JSON.stringify({
+          card_id: move.cardId,
+          targetPileId: move.pileId,
+          expectedStateVersion: versionBeforeMove
+        }),
+        1000 + acceptedMoves + 1
+      );
+
+      assert.equal(result.accepted, true);
+      assert.equal(state.stateVersion, versionBeforeMove + 1);
+      assertCardConservation(state);
+      acceptedMoves += 1;
+    }
+
+    assert.equal(
+      state.status,
+      runtime.MatchStatus.Finished,
+      "seed " + seed + " did not finish"
+    );
+    assert.ok(state.winnerId);
+    assert.ok(acceptedMoves > 0 && acceptedMoves <= 100);
+    assert.equal(state.resultPersistencePending, true);
+  }
+});
+
 test("sprintMatchLoop broadcasts private state updates and targeted move rejections", () => {
   const state = createInitializedState(runtime);
   const player = state.players["player-a"];
   const playedCard = player.hand[0];
   state.centerPiles.pile_1 = [
-    card("pile_top", playedCard.color, runtime.CardShape.Sun, 6)
+    card("pile_top", playedCard.color, runtime.CardShape.Flag, 5)
   ];
   const calls = [];
   const dispatcher = {
@@ -627,17 +781,17 @@ function createStuckResetState(runtime) {
   const state = createInitializedState(runtime);
   state.stateVersion = 7;
   state.players["player-a"].hand = [
-    card("hand_a", runtime.CardColor.Green, runtime.CardShape.Heart, 6)
+    card("hand_a", runtime.CardColor.Green, runtime.CardShape.House, 5)
   ];
   state.players["player-b"].hand = [
-    card("hand_b", runtime.CardColor.Purple, runtime.CardShape.Heart, 6)
+    card("hand_b", runtime.CardColor.Purple, runtime.CardShape.House, 5)
   ];
   state.centerPiles.pile_1 = [
     card("pile_1_old", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
     card("pile_1_top", runtime.CardColor.Red, runtime.CardShape.Star, 1)
   ];
   state.centerPiles.pile_2 = [
-    card("pile_2_old", runtime.CardColor.Yellow, runtime.CardShape.Sun, 5),
+    card("pile_2_old", runtime.CardColor.Yellow, runtime.CardShape.Flag, 5),
     card("pile_2_top", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2)
   ];
   return state;
@@ -920,7 +1074,7 @@ test("game-ended view is sent before statistics persist on the following tick", 
   player.deck = [];
   state.startedAtMs = 1000;
   state.centerPiles.pile_1 = [
-    card("pile_top", runtime.CardColor.Red, runtime.CardShape.Sun, 6)
+    card("pile_top", runtime.CardColor.Red, runtime.CardShape.Flag, 5)
   ];
   const broadcasts = [];
   let profileWrites = 0;

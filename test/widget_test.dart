@@ -23,7 +23,7 @@ void main() {
         GameCard(
           cardId: 'card_002',
           color: GameCardColor.blue,
-          shape: GameCardShape.heart,
+          shape: GameCardShape.tree,
           count: 2,
         ),
         GameCard(
@@ -33,9 +33,9 @@ void main() {
           count: 3,
         ),
       ],
-      myDeckCount: 27,
+      myDeckCount: 26,
       opponentHandCount: 3,
-      opponentDeckCount: 27,
+      opponentDeckCount: 26,
       pile1: const CenterPileView(
         topCard: GameCard(
           cardId: 'card_061',
@@ -46,9 +46,9 @@ void main() {
       ),
       pile2: const CenterPileView(
         topCard: GameCard(
-          cardId: 'card_062',
+          cardId: 'card_060',
           color: GameCardColor.purple,
-          shape: GameCardShape.spiral,
+          shape: GameCardShape.house,
           count: 5,
         ),
       ),
@@ -93,9 +93,9 @@ void main() {
 
     for (final cardText in <String>[
       'orange • diamond • 4',
-      'purple • spiral • 5',
+      'purple • house • 5',
       'red • star • 1',
-      'blue • heart • 2',
+      'blue • tree • 2',
       'green • circle • 3',
     ]) {
       await tester.scrollUntilVisible(find.text(cardText), 150);

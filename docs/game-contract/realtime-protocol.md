@@ -89,7 +89,7 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
 
 Opcode `10` (`matchStarted`) is implemented. Its initial payload uses
 `stateVersion: 1`, `status: "active"`, three cards in `myHand`, deck counts of
-27, opponent hand count of 3, and one public top card for each center pile.
+26, opponent hand count of 3, and one public top card for each center pile.
 Nakama sends the payload separately to each player presence. It never includes
 the opponent hand, either private deck, or center-pile history.
 

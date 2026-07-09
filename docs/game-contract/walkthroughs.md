@@ -41,7 +41,7 @@ Initial facts:
 ```text
 stateVersion = 9
 Player A card: red star x3
-pile_2 top: blue heart x5
+pile_2 top: blue tree x5
 ```
 
 No color, shape, or count matches.

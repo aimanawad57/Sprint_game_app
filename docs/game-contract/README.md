@@ -6,7 +6,7 @@ events. Flutter gameplay handling is intentionally deferred.
 
 ## Documents
 
-- [Card catalog inventory](card-catalog.csv) - the approved 62-card catalog.
+- [Card catalog inventory](card-catalog.csv) - the approved 60-card catalog.
 - [Card catalog rules](card-catalog.md) - allowed attributes and validation rules.
 - [Setup contract](setup-contract.md) - shuffle, deal, player ordering, and invariants.
 - [Realtime protocol](realtime-protocol.md) - opcodes, payloads, rejection codes, and version policy.
@@ -15,10 +15,10 @@ events. Flutter gameplay handling is intentionally deferred.
 ## Frozen decisions
 
 - The game has exactly two players.
-- The catalog has exactly 62 physical cards.
+- The catalog has exactly 60 physical cards.
 - Each player receives 30 cards.
 - Two additional cards become the initial center-pile cards.
-- Each player initially draws 3 cards, leaving 27 in their private deck.
+- Each player initially draws 3 cards, leaving 26 in their private deck.
 - The server shuffles and owns all authoritative state.
 - Player A is the first user in the matchmaker result.
 - Player B is the second user in the matchmaker result.

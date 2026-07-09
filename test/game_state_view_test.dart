@@ -13,15 +13,15 @@ void main() {
       'status': 'active',
       'myHand': [
         card('card_001', 'red', 'star', 1),
-        card('card_002', 'blue', 'heart', 2),
+        card('card_002', 'blue', 'tree', 2),
         card('card_003', 'green', 'circle', 3),
       ],
-      'myDeckCount': 27,
+      'myDeckCount': 26,
       'opponentHandCount': 3,
-      'opponentDeckCount': 27,
+      'opponentDeckCount': 26,
       'centerPiles': {
         'pile_1': {'topCard': card('card_061', 'orange', 'diamond', 4)},
-        'pile_2': {'topCard': card('card_062', 'purple', 'spiral', 5)},
+        'pile_2': {'topCard': card('card_060', 'purple', 'house', 5)},
       },
       'winnerId': winnerId,
     };
@@ -34,11 +34,11 @@ void main() {
       expect(state.stateVersion, 1);
       expect(state.status, GameMatchStatus.active);
       expect(state.myHand, hasLength(3));
-      expect(state.myDeckCount, 27);
+      expect(state.myDeckCount, 26);
       expect(state.opponentHandCount, 3);
-      expect(state.opponentDeckCount, 27);
+      expect(state.opponentDeckCount, 26);
       expect(state.pile1.topCard.cardId, 'card_061');
-      expect(state.pile2.topCard.cardId, 'card_062');
+      expect(state.pile2.topCard.cardId, 'card_060');
       expect(state.winnerId, isNull);
     });
 

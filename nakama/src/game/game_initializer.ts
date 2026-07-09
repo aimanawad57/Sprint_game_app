@@ -111,13 +111,13 @@ function assertInitializedCardState(state: SprintMatchState): void {
     allCards.length !== CARD_CATALOG_SIZE ||
     Object.keys(uniqueIds).length !== CARD_CATALOG_SIZE ||
     playerA.hand.length !== 3 ||
-    playerA.deck.length !== 27 ||
+    playerA.deck.length !== 26 ||
     playerB.hand.length !== 3 ||
-    playerB.deck.length !== 27 ||
+    playerB.deck.length !== 26 ||
     state.centerPiles.pile_1.length !== 1 ||
     state.centerPiles.pile_2.length !== 1
   ) {
-    throw new Error("Initialized game violates the 62-card distribution contract.");
+    throw new Error("Initialized game violates the 60-card distribution contract.");
   }
 }
 
@@ -143,11 +143,11 @@ function initializeGameState(
   const playerA = state.players[state.playerOrder[0]];
   const playerB = state.players[state.playerOrder[1]];
   const playerCards = shuffledCards.slice(0, shuffledCards.length - 2);
-  if (playerCards.length !== 60) {
-    throw new Error("Card allocation requires exactly 60 non-center cards.");
+  if (playerCards.length !== 58) {
+    throw new Error("Card allocation requires exactly 58 non-center cards.");
   }
-  const playerADraw = drawCards(playerCards.slice(0, 30), 3);
-  const playerBDraw = drawCards(playerCards.slice(30, 60), 3);
+  const playerADraw = drawCards(playerCards.slice(0, 29), 3);
+  const playerBDraw = drawCards(playerCards.slice(29, 58), 3);
   playerA.deck = playerADraw.deck;
   playerA.hand = playerADraw.hand;
   playerB.deck = playerBDraw.deck;
