@@ -14,6 +14,8 @@ class GameStatePanel extends StatefulWidget {
     required this.onBack,
     this.isSubmitting = false,
     this.feedbackMessage,
+    this.movesEnabled = true,
+    this.connectionMessage,
   });
 
   final GameStateView gameState;
@@ -21,6 +23,8 @@ class GameStatePanel extends StatefulWidget {
   final VoidCallback onBack;
   final bool isSubmitting;
   final String? feedbackMessage;
+  final bool movesEnabled;
+  final String? connectionMessage;
 
   @override
   State<GameStatePanel> createState() => _GameStatePanelState();
@@ -31,7 +35,8 @@ class _GameStatePanelState extends State<GameStatePanel> {
 
   bool get _canPlay {
     return widget.gameState.status == GameMatchStatus.active &&
-        !widget.isSubmitting;
+        !widget.isSubmitting &&
+        widget.movesEnabled;
   }
 
   @override
@@ -77,6 +82,10 @@ class _GameStatePanelState extends State<GameStatePanel> {
           label: 'State version',
           value: gameState.stateVersion.toString(),
         ),
+        if (widget.connectionMessage case final message?) ...[
+          const SizedBox(height: 8),
+          _ConnectionPanel(message: message),
+        ],
         if (widget.feedbackMessage case final feedback?) ...[
           const SizedBox(height: 8),
           _FeedbackPanel(message: feedback),
@@ -96,7 +105,9 @@ class _GameStatePanelState extends State<GameStatePanel> {
         Text('Center piles', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 4),
         Text(
-          _selectedCardId == null
+          !widget.movesEnabled
+              ? 'Moves are paused until both players are connected.'
+              : _selectedCardId == null
               ? 'Select one of your cards, then select a center pile.'
               : 'Now select the center pile where you want to play it.',
         ),
@@ -204,6 +215,38 @@ class _FeedbackPanel extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Text(message, style: TextStyle(color: colors.onErrorContainer)),
+      ),
+    );
+  }
+}
+
+class _ConnectionPanel extends StatelessWidget {
+  const _ConnectionPanel({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.secondaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Icon(Icons.wifi_off, color: colors.onSecondaryContainer),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: TextStyle(color: colors.onSecondaryContainer),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

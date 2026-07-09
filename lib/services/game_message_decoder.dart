@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../models/game/game_connection.dart';
 import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
 
@@ -12,6 +13,10 @@ class GameMessageDecoder {
 
   MoveRejectedView decodeMoveRejected(List<int>? data) {
     return MoveRejectedView.fromJson(_decodeJsonObject(data));
+  }
+
+  GameConnectionView decodeConnectionChanged(List<int>? data) {
+    return GameConnectionView.fromJson(_decodeJsonObject(data));
   }
 
   Map<String, dynamic> _decodeJsonObject(List<int>? data) {

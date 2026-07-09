@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:nakama/nakama.dart' as nakama;
 
 import '../config/game_protocol.dart';
+import '../models/game/game_connection.dart';
 import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
 import '../services/game_message_decoder.dart';
@@ -52,6 +53,7 @@ class _PlayPageState extends State<PlayPage> {
   bool _isMovePending = false;
   bool _isRecoveringConnection = false;
   int _matchedPlayerCount = 0;
+  GameConnectionView? _connectionState;
 
   @override
   void initState() {
@@ -231,6 +233,19 @@ class _PlayPageState extends State<PlayPage> {
             _moveFeedback = rejection.reason.displayMessage;
           });
           break;
+        case GameServerOpcode.connectionChanged:
+          final connectionState = _messageDecoder.decodeConnectionChanged(
+            message.data,
+          );
+          if (!mounted) return;
+          setState(() {
+            _connectionState = connectionState;
+            if (!connectionState.allPlayersConnected) {
+              _isMovePending = false;
+              _pendingCardId = null;
+            }
+          });
+          break;
         default:
           debugPrint('Ignoring server opcode ${message.opCode}.');
       }
@@ -282,6 +297,7 @@ class _PlayPageState extends State<PlayPage> {
         matchId == null ||
         gameState == null ||
         gameState.status != GameMatchStatus.active ||
+        !(_connectionState?.allPlayersConnected ?? true) ||
         _isMovePending) {
       return;
     }
@@ -418,6 +434,15 @@ class _PlayPageState extends State<PlayPage> {
   @override
   Widget build(BuildContext context) {
     final gameState = _gameState;
+    final connectionState = _connectionState;
+    final movesEnabled = connectionState?.allPlayersConnected ?? true;
+    final currentUserConnected =
+        connectionState?.isUserConnected(widget.nakamaSession.userId) ?? true;
+    final connectionMessage = movesEnabled
+        ? null
+        : currentUserConnected
+        ? 'Opponent disconnected. Waiting for reconnection...'
+        : 'You are disconnected. Reconnecting...';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Play')),
@@ -429,6 +454,8 @@ class _PlayPageState extends State<PlayPage> {
                 onBack: () => Navigator.of(context).pop(),
                 isSubmitting: _isMovePending,
                 feedbackMessage: _moveFeedback,
+                movesEnabled: movesEnabled,
+                connectionMessage: connectionMessage,
               )
             : Padding(
                 padding: const EdgeInsets.all(24),

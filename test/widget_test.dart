@@ -64,6 +64,8 @@ void main() {
     VoidCallback? onBack,
     bool isSubmitting = false,
     String? feedbackMessage,
+    bool movesEnabled = true,
+    String? connectionMessage,
   }) {
     return tester.pumpWidget(
       MaterialApp(
@@ -74,6 +76,8 @@ void main() {
             onBack: onBack ?? () {},
             isSubmitting: isSubmitting,
             feedbackMessage: feedbackMessage,
+            movesEnabled: movesEnabled,
+            connectionMessage: connectionMessage,
           ),
         ),
       ),
@@ -174,6 +178,35 @@ void main() {
     expect(find.text('Game finished'), findsOneWidget);
     final handCard = find.text('red • star • 1');
     await tester.scrollUntilVisible(handCard, 150);
+    await tester.tap(handCard);
+    await tester.pump();
+
+    expect(find.byIcon(Icons.check_circle), findsNothing);
+    expect(submissionCount, 0);
+  });
+
+  testWidgets('shows disconnect status and disables moves', (tester) async {
+    var submissionCount = 0;
+    await pumpPanel(
+      tester,
+      movesEnabled: false,
+      connectionMessage: 'Opponent disconnected. Waiting for reconnection...',
+      onSubmitMove: (_, _) => submissionCount++,
+    );
+
+    expect(
+      find.text('Opponent disconnected. Waiting for reconnection...'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Moves are paused until both players are connected.'),
+      findsOneWidget,
+    );
+
+    await tester.drag(find.byType(ListView), const Offset(0, -500));
+    await tester.pumpAndSettle();
+    final handCard = find.byKey(const ValueKey('card_001'));
+    expect(handCard, findsOneWidget);
     await tester.tap(handCard);
     await tester.pump();
 

@@ -91,4 +91,40 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('decodes a connection change', () {
+    final connection = decoder.decodeConnectionChanged(
+      utf8.encode(
+        jsonEncode({
+          'changes': [
+            {'userId': 'player-b', 'status': 'disconnected'},
+          ],
+          'connectedUserIds': ['player-a'],
+          'connectedCount': 1,
+          'expectedCount': 2,
+        }),
+      ),
+    );
+
+    expect(connection.allPlayersConnected, isFalse);
+    expect(connection.isUserConnected('player-a'), isTrue);
+    expect(connection.isUserConnected('player-b'), isFalse);
+    expect(connection.changes.single.userId, 'player-b');
+  });
+
+  test('rejects inconsistent connection counts', () {
+    expect(
+      () => decoder.decodeConnectionChanged(
+        utf8.encode(
+          jsonEncode({
+            'changes': <Object>[],
+            'connectedUserIds': ['player-a'],
+            'connectedCount': 2,
+            'expectedCount': 2,
+          }),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
 }
