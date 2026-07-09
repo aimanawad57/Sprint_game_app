@@ -159,6 +159,28 @@ function confirmSenderPlayer(
   return player;
 }
 
+function confirmAllPlayersConnected(
+  state: SprintMatchState,
+  playerId: string,
+  payload: SubmitMovePayload
+): ApplyMoveResult | null {
+  const allPlayersConnected = state.playerOrder.every((userId) => {
+    const player = state.players[userId];
+    return player?.connected === true && state.presences[userId] !== undefined;
+  });
+
+  if (!allPlayersConnected) {
+    return rejectMove(
+      state,
+      playerId,
+      MoveRejectionReason.PlayerDisconnected,
+      payload
+    );
+  }
+
+  return null;
+}
+
 function getTargetPile(
   state: SprintMatchState,
   payload: SubmitMovePayload
@@ -244,6 +266,15 @@ function applySubmitMove(
     return playerOrFailure as ApplyMoveResult;
   }
   const player = playerOrFailure as PlayerMatchState;
+
+  const connectionFailure = confirmAllPlayersConnected(
+    state,
+    player.userId,
+    payload
+  );
+  if (connectionFailure) {
+    return connectionFailure;
+  }
 
   const pileOrFailure = getTargetPile(state, payload);
   if ((pileOrFailure as ApplyMoveResult).accepted === false) {

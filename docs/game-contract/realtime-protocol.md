@@ -126,6 +126,7 @@ player_not_in_match
 card_not_in_hand
 invalid_target_pile
 card_does_not_match
+player_disconnected
 stale_move
 game_finished
 ```
@@ -136,6 +137,11 @@ tests use the codes, not display sentences.
 Opcode `12` (`moveRejected`) is implemented on both Nakama and Flutter. A
 rejection leaves the current game snapshot unchanged and displays the stable
 reason as user-facing feedback.
+
+Nakama rejects a submitted move with `player_disconnected` unless both
+canonical players have an active match presence. This server-side rule is
+authoritative; Flutter also disables move controls while opcode `15` reports
+that either player is disconnected.
 
 ### Stuck reset - opcode 13
 

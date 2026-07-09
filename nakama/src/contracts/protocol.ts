@@ -23,6 +23,7 @@ enum MoveRejectionReason {
   CardNotInHand = "card_not_in_hand",
   InvalidTargetPile = "invalid_target_pile",
   CardDoesNotMatch = "card_does_not_match",
+  PlayerDisconnected = "player_disconnected",
   StaleMove = "stale_move",
   GameFinished = "game_finished"
 }

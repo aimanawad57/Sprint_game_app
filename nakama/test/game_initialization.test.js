@@ -504,6 +504,51 @@ test("applySubmitMove rejects inactive match, unknown player, missing card, bad 
   );
 });
 
+test("applySubmitMove rejects moves while either player is disconnected", () => {
+  const payloadFor = (state) =>
+    JSON.stringify({
+      card_id: state.players["player-a"].hand[0].card_id,
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion
+    });
+
+  const opponentDisconnected = createInitializedState(runtime);
+  const opponentVersion = opponentDisconnected.stateVersion;
+  opponentDisconnected.players["player-b"].connected = false;
+  delete opponentDisconnected.presences["player-b"];
+
+  const opponentResult = runtime.applySubmitMove(
+    opponentDisconnected,
+    {userId: "player-a"},
+    payloadFor(opponentDisconnected)
+  );
+
+  assert.equal(opponentResult.accepted, false);
+  assert.equal(
+    opponentResult.rejection.reason,
+    runtime.MoveRejectionReason.PlayerDisconnected
+  );
+  assert.equal(opponentDisconnected.stateVersion, opponentVersion);
+
+  const senderConnectionMissing = createInitializedState(runtime);
+  const senderVersion = senderConnectionMissing.stateVersion;
+  senderConnectionMissing.players["player-a"].connected = false;
+  delete senderConnectionMissing.presences["player-a"];
+
+  const senderResult = runtime.applySubmitMove(
+    senderConnectionMissing,
+    {userId: "player-a"},
+    payloadFor(senderConnectionMissing)
+  );
+
+  assert.equal(senderResult.accepted, false);
+  assert.equal(
+    senderResult.rejection.reason,
+    runtime.MoveRejectionReason.PlayerDisconnected
+  );
+  assert.equal(senderConnectionMissing.stateVersion, senderVersion);
+});
+
 test("applySubmitMove ends the game when the last hand card is played with no deck", () => {
   const state = createInitializedState(runtime);
   const player = state.players["player-a"];

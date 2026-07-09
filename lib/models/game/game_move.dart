@@ -34,6 +34,7 @@ enum MoveRejectionReason {
   cardNotInHand('card_not_in_hand'),
   invalidTargetPile('invalid_target_pile'),
   cardDoesNotMatch('card_does_not_match'),
+  playerDisconnected('player_disconnected'),
   staleMove('stale_move'),
   gameFinished('game_finished');
 
@@ -55,6 +56,8 @@ enum MoveRejectionReason {
         return 'The selected center pile is invalid.';
       case MoveRejectionReason.cardDoesNotMatch:
         return 'That card does not match the center card.';
+      case MoveRejectionReason.playerDisconnected:
+        return 'Moves are paused while a player is disconnected.';
       case MoveRejectionReason.staleMove:
         return 'The game changed before your move was processed.';
       case MoveRejectionReason.gameFinished:
