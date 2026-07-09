@@ -1,8 +1,9 @@
 # Sprint Game Contract
 
 This directory contains the reviewed contract for the Sprint game core. Nakama
-implements the catalog, initial deal, private initial state, and connection
-events. Flutter gameplay handling is intentionally deferred.
+implements the catalog, initial deal, private player views, gameplay moves,
+connection events, stuck resets, game ending, and profile statistics. Flutter
+renders the authoritative server state and submits player moves.
 
 ## Documents
 
@@ -16,8 +17,8 @@ events. Flutter gameplay handling is intentionally deferred.
 
 - The game has exactly two players.
 - The catalog has exactly 60 physical cards.
-- Each player receives 30 cards.
-- Two additional cards become the initial center-pile cards.
+- Two cards become the initial center-pile cards.
+- The remaining 58 cards are split evenly, so each player receives 29 cards.
 - Each player initially draws 3 cards, leaving 26 in their private deck.
 - The server shuffles and owns all authoritative state.
 - Player A is the first user in the matchmaker result.

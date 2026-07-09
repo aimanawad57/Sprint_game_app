@@ -56,10 +56,10 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
   "status": "active",
   "myHand": [
     {
-      "card_id": "card_017",
+      "card_id": "card_012",
       "color": "red",
       "shape": "star",
-      "count": 3
+      "count": 2
     }
   ],
   "myDeckCount": 24,
@@ -68,18 +68,18 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
   "centerPiles": {
     "pile_1": {
       "topCard": {
-        "card_id": "card_009",
-        "color": "blue",
+        "card_id": "card_005",
+        "color": "yellow",
         "shape": "star",
-        "count": 5
+        "count": 3
       }
     },
     "pile_2": {
       "topCard": {
         "card_id": "card_052",
-        "color": "yellow",
-        "shape": "circle",
-        "count": 2
+        "color": "green",
+        "shape": "diamond",
+        "count": 4
       }
     }
   },

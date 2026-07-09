@@ -8,8 +8,8 @@ Initial facts:
 
 ```text
 stateVersion = 8
-Player A hand contains card_017: red star x3
-pile_1 top is card_009: blue star x5
+Player A hand contains card_012: red star x2
+pile_1 top is card_005: yellow star x3
 Player A private deck is not empty
 ```
 
@@ -17,7 +17,7 @@ Player A submits:
 
 ```json
 {
-  "card_id": "card_017",
+  "card_id": "card_012",
   "targetPileId": "pile_1",
   "expectedStateVersion": 8
 }
@@ -26,10 +26,10 @@ Player A submits:
 Result:
 
 1. Nakama identifies Player A from the message sender.
-2. `card_017` is confirmed in Player A's hand.
+2. `card_012` is confirmed in Player A's hand.
 3. The move matches because both cards have the `star` shape.
-4. The server removes `card_017` from the hand.
-5. The server appends `card_017` to `pile_1`.
+4. The server removes `card_012` from the hand.
+5. The server appends `card_012` to `pile_1`.
 6. The server draws one replacement from Player A's private deck.
 7. The server increments `stateVersion` to 9.
 8. Each player receives their own private state view.
@@ -40,7 +40,7 @@ Initial facts:
 
 ```text
 stateVersion = 9
-Player A card: red star x3
+Player A card: red star x2
 pile_2 top: blue tree x5
 ```
 
