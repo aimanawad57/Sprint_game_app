@@ -30,6 +30,10 @@ function cloneAndShuffleCards(
 }
 
 function bothPlayersConnected(state: SprintMatchState): boolean {
+  if (state.playerOrder[1] === UNASSIGNED_PLAYER_ID) {
+    return false;
+  }
+
   return state.playerOrder.every(
     (userId) => state.players[userId].connected && state.presences[userId] !== undefined
   );

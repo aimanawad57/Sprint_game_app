@@ -1,3 +1,5 @@
+const UNASSIGNED_PLAYER_ID = "";
+
 enum MatchStatus {
   Waiting = "waiting",
   Active = "active",

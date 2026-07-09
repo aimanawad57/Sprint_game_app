@@ -11,7 +11,7 @@ COPY tsconfig.json .
 COPY src/ src/
 RUN npx tsc
 
-FROM registry.heroiclabs.com/heroiclabs/nakama:3.22.0
+FROM heroiclabs/nakama:3.22.0
 
 COPY --from=node-builder /backend/build/*.js /nakama/data/modules/build/
 COPY local.yml /nakama/data/

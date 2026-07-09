@@ -64,6 +64,37 @@ function createWaitingMatchState(
   };
 }
 
+// Used for a match created via a shareable code: the creator is known, but
+// the second seat stays open (UNASSIGNED_PLAYER_ID) until someone redeems
+// the code and joins.
+function createOpenWaitingMatchState(creatorId: string): SprintMatchState {
+  const players: {[userId: string]: PlayerMatchState} = {};
+
+  players[creatorId] = {
+    userId: creatorId,
+    hand: [],
+    deck: [],
+    connected: false
+  };
+
+  return {
+    status: MatchStatus.Waiting,
+    playerOrder: [creatorId, UNASSIGNED_PLAYER_ID],
+    players: players,
+    presences: {},
+    centerPiles: {
+      pile_1: [],
+      pile_2: []
+    },
+    stateVersion: 0,
+    winnerId: null,
+    startedAtMs: null,
+    endedAtMs: null,
+    resultPersistencePending: false,
+    resultPersisted: false
+  };
+}
+
 function buildConnectionChangedPayload(
   state: SprintMatchState,
   changes: ConnectionChange[]
@@ -206,6 +237,22 @@ function sprintMatchInit(
   nk: nkruntime.Nakama,
   params: {[key: string]: any}
 ): {state: SprintMatchState; tickRate: number; label: string} | null {
+  if (params && params.mode === "code") {
+    const creatorId = params.creatorId;
+    if (typeof creatorId !== "string" || creatorId.trim().length === 0) {
+      logger.error("Cannot initialize sprint match: creatorId is required for a code match.");
+      return null;
+    }
+
+    logger.info("Initializing open sprint match for creator: %s", creatorId);
+
+    return {
+      state: createOpenWaitingMatchState(creatorId),
+      tickRate: 10,
+      label: JSON.stringify({mode: "sprint_by_code"})
+    };
+  }
+
   const playerOrder = parsePlayerOrder(params);
   if (playerOrder === null) {
     logger.error("Cannot initialize sprint match: %s.", invalidMatchParametersMessage);
@@ -238,8 +285,11 @@ function sprintMatchJoinAttempt(
   metadata: {[key: string]: any}
 ): {state: SprintMatchState; accept: boolean; rejectMessage?: string} {
   const isExpectedUser = state.playerOrder.indexOf(presence.userId) !== -1;
+  const hasOpenSecondSeat = state.playerOrder[1] === UNASSIGNED_PLAYER_ID;
+  const canFillOpenSeat =
+    hasOpenSecondSeat && presence.userId !== state.playerOrder[0];
 
-  if (!isExpectedUser) {
+  if (!isExpectedUser && !canFillOpenSeat) {
     logger.warn("Rejected unauthorized sprint match join from user: %s", presence.userId);
     return {
       state: state,
@@ -267,6 +317,20 @@ function sprintMatchJoin(
   const resyncPresences: nkruntime.Presence[] = [];
 
   presences.forEach((presence) => {
+    if (
+      state.playerOrder[1] === UNASSIGNED_PLAYER_ID &&
+      presence.userId !== state.playerOrder[0]
+    ) {
+      state.playerOrder[1] = presence.userId;
+      state.players[presence.userId] = {
+        userId: presence.userId,
+        hand: [],
+        deck: [],
+        connected: false
+      };
+      logger.info("Sprint match code redeemed by user: %s", presence.userId);
+    }
+
     const player = state.players[presence.userId];
     if (!player) {
       logger.warn(

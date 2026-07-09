@@ -7,6 +7,8 @@ function InitModule(
   validateCardCatalog(CARD_CATALOG);
 
   initializer.registerRpc("healthcheck", rpcHealthcheck);
+  initializer.registerRpc("create_match_by_code", rpcCreateMatchByCode);
+  initializer.registerRpc("join_match_by_code", rpcJoinMatchByCode);
   initializer.registerMatchmakerMatched(matchmakerMatched);
   initializer.registerMatch("sprint_authoritative_match", {
     matchInit: sprintMatchInit,
