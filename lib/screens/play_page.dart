@@ -7,6 +7,7 @@ import '../config/game_protocol.dart';
 import '../models/game/game_connection.dart';
 import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
+import '../models/play_exit_action.dart';
 import '../services/game_message_decoder.dart';
 import '../services/nakama_service.dart';
 import '../widgets/game_state_panel.dart';
@@ -509,6 +510,9 @@ class _PlayPageState extends State<PlayPage> {
                 currentUserId: widget.nakamaSession.userId,
                 onSubmitMove: _submitMove,
                 onBack: () => Navigator.of(context).pop(),
+                onViewProfile: gameState.status == GameMatchStatus.finished
+                    ? () => Navigator.of(context).pop(PlayExitAction.viewProfile)
+                    : null,
                 isSubmitting: _isMovePending,
                 feedbackMessage: _moveFeedback,
                 movesEnabled: movesEnabled,

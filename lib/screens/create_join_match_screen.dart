@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:nakama/nakama.dart' as nakama;
 
+import '../models/play_exit_action.dart';
 import '../services/nakama_service.dart';
 import 'play_page.dart';
 
@@ -35,8 +36,8 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  void _openQuickMatch() {
-    Navigator.of(context).push(
+  Future<void> _openQuickMatch() async {
+    final result = await Navigator.of(context).push<PlayExitAction>(
       MaterialPageRoute(
         builder: (context) {
           return PlayPage(
@@ -46,6 +47,8 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
         },
       ),
     );
+
+    _bubblePlayResult(result);
   }
 
   Future<void> _createMatch() async {
@@ -58,7 +61,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
       );
 
       if (!mounted) return;
-      Navigator.of(context).push(
+      final result = await Navigator.of(context).push<PlayExitAction>(
         MaterialPageRoute(
           builder: (context) {
             return PlayPage(
@@ -70,6 +73,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
           },
         ),
       );
+      _bubblePlayResult(result);
     } catch (error) {
       debugPrint('Could not create match: $error');
       if (!mounted) return;
@@ -99,7 +103,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
       );
 
       if (!mounted) return;
-      Navigator.of(context).push(
+      final result = await Navigator.of(context).push<PlayExitAction>(
         MaterialPageRoute(
           builder: (context) {
             return PlayPage(
@@ -110,6 +114,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
           },
         ),
       );
+      _bubblePlayResult(result);
     } catch (error) {
       debugPrint('Could not join match: $error');
       if (!mounted) return;
@@ -119,6 +124,11 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
         setState(() => _isJoining = false);
       }
     }
+  }
+
+  void _bubblePlayResult(PlayExitAction? result) {
+    if (!mounted || result == null) return;
+    Navigator.of(context).pop(result);
   }
 
   @override

@@ -66,6 +66,7 @@ void main() {
     GameMatchStatus status = GameMatchStatus.active,
     MoveSubmitCallback? onSubmitMove,
     VoidCallback? onBack,
+    VoidCallback? onViewProfile,
     bool isSubmitting = false,
     String? feedbackMessage,
     bool movesEnabled = true,
@@ -83,6 +84,7 @@ void main() {
             currentUserId: currentUserId,
             onSubmitMove: onSubmitMove ?? (_, _) {},
             onBack: onBack ?? () {},
+            onViewProfile: onViewProfile,
             isSubmitting: isSubmitting,
             feedbackMessage: feedbackMessage,
             movesEnabled: movesEnabled,
@@ -149,6 +151,24 @@ void main() {
     );
     await tester.scrollUntilVisible(find.text('Back to main menu'), 200);
     expect(find.text('Back to main menu'), findsOneWidget);
+  });
+
+  testWidgets('invokes the view profile callback after the game finishes', (
+    tester,
+  ) async {
+    var pressed = false;
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      winnerName: 'Alice',
+      onViewProfile: () => pressed = true,
+    );
+
+    await tester.scrollUntilVisible(find.text('View profile'), 200);
+    await tester.tap(find.text('View profile'));
+
+    expect(pressed, isTrue);
   });
 
   testWidgets('shows a losing result when the opponent wins', (tester) async {

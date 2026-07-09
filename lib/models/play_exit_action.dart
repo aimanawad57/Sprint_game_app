@@ -1,0 +1,3 @@
+enum PlayExitAction {
+  viewProfile,
+}

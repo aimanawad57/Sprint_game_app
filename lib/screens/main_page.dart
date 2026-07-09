@@ -3,6 +3,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:nakama/nakama.dart' as nakama;
 
 import '../models/player_profile.dart';
+import '../models/play_exit_action.dart';
 import '../services/nakama_service.dart';
 import '../widgets/backend_status_panel.dart';
 import 'create_join_match_screen.dart';
@@ -85,7 +86,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _openPlayPage() async {
-    await Navigator.of(context).push(
+    final result = await Navigator.of(context).push<PlayExitAction>(
       MaterialPageRoute(
         builder: (context) {
           return CreateJoinMatchScreen(
@@ -101,6 +102,11 @@ class _MainPageState extends State<MainPage> {
       _profileStatus = ProfileStatus.loading;
     });
     await _loadOrCreatePlayerProfile();
+
+    if (!mounted) return;
+    if (result == PlayExitAction.viewProfile) {
+      _openProfilePage();
+    }
   }
 
   void _openProfilePage() {

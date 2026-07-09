@@ -13,6 +13,7 @@ class GameStatePanel extends StatefulWidget {
     required this.currentUserId,
     required this.onSubmitMove,
     required this.onBack,
+    this.onViewProfile,
     this.isSubmitting = false,
     this.feedbackMessage,
     this.movesEnabled = true,
@@ -23,6 +24,7 @@ class GameStatePanel extends StatefulWidget {
   final String currentUserId;
   final MoveSubmitCallback onSubmitMove;
   final VoidCallback onBack;
+  final VoidCallback? onViewProfile;
   final bool isSubmitting;
   final String? feedbackMessage;
   final bool movesEnabled;
@@ -168,6 +170,14 @@ class _GameStatePanelState extends State<GameStatePanel> {
           _InfoRow(label: 'Winner', value: _winnerDisplayName(gameState)),
         ],
         const SizedBox(height: 24),
+        if (gameFinished && widget.onViewProfile != null) ...[
+          FilledButton.icon(
+            onPressed: widget.onViewProfile,
+            icon: const Icon(Icons.person),
+            label: const Text('View profile'),
+          ),
+          const SizedBox(height: 12),
+        ],
         OutlinedButton.icon(
           onPressed: widget.onBack,
           icon: Icon(gameFinished ? Icons.home : Icons.arrow_back),
