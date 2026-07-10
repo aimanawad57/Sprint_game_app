@@ -28,7 +28,8 @@ function rpcCreateMatchByCode(
   const code = findUnusedMatchCode(nk);
   const matchId = nk.matchCreate("sprint_authoritative_match", {
     mode: "code",
-    creatorId: creatorId
+    creatorId: creatorId,
+    code: code
   });
 
   const record: MatchCodeRecord = {

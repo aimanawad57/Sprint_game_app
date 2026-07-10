@@ -37,4 +37,5 @@ type SprintMatchState = {
   endedAtMs: number | null;
   resultPersistencePending: boolean;
   resultPersisted: boolean;
+  matchCode: string | null;
 };

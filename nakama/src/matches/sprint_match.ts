@@ -115,14 +115,18 @@ function createWaitingMatchState(
     startedAtMs: null,
     endedAtMs: null,
     resultPersistencePending: false,
-    resultPersisted: false
+    resultPersisted: false,
+    matchCode: null
   };
 }
 
 // Used for a match created via a shareable code: the creator is known, but
 // the second seat stays open (UNASSIGNED_PLAYER_ID) until someone redeems
 // the code and joins.
-function createOpenWaitingMatchState(creatorId: string): SprintMatchState {
+function createOpenWaitingMatchState(
+  creatorId: string,
+  code: string
+): SprintMatchState {
   const players: {[userId: string]: PlayerMatchState} = {};
 
   players[creatorId] = {
@@ -149,8 +153,30 @@ function createOpenWaitingMatchState(creatorId: string): SprintMatchState {
     startedAtMs: null,
     endedAtMs: null,
     resultPersistencePending: false,
-    resultPersisted: false
+    resultPersisted: false,
+    matchCode: code
   };
+}
+
+// Deletes the match_codes storage record once neither assigned player is
+// still connected to the match, so a stale code can no longer resolve to a
+// match nobody is coming back to. Kept alive while at least one of the two
+// players remains connected, so a dropped player can still redeem the code
+// again to look up the matchId and reconnect.
+function invalidateMatchCode(
+  nk: nkruntime.Nakama,
+  logger: nkruntime.Logger,
+  state: SprintMatchState
+): void {
+  if (!state.matchCode) {
+    return;
+  }
+
+  nk.storageDelete([
+    {collection: MATCH_CODE_COLLECTION, key: state.matchCode, userId: SYSTEM_USER_ID}
+  ]);
+  logger.info("Invalidated sprint match code %s", state.matchCode);
+  state.matchCode = null;
 }
 
 function buildConnectionChangedPayload(
@@ -414,10 +440,16 @@ function sprintMatchInit(
       return null;
     }
 
+    const code = params.code;
+    if (typeof code !== "string" || code.trim().length === 0) {
+      logger.error("Cannot initialize sprint match: code is required for a code match.");
+      return null;
+    }
+
     logger.info("Initializing open sprint match for creator: %s", creatorId);
 
     return {
-      state: createOpenWaitingMatchState(creatorId),
+      state: createOpenWaitingMatchState(creatorId, code),
       tickRate: 10,
       label: JSON.stringify({mode: "sprint_by_code"})
     };
@@ -635,6 +667,10 @@ function sprintMatchLeave(
       "Sprint match connection change: connected users %s",
       buildConnectionChangedPayload(state, changes).connectedUserIds.join(",")
     );
+  }
+
+  if (state.matchCode && Object.keys(state.presences).length === 0) {
+    invalidateMatchCode(nk, logger, state);
   }
 
   return {state: state};
