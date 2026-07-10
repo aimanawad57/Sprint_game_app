@@ -161,6 +161,7 @@ function initializeGameState(
   state.status = MatchStatus.Active;
   state.stateVersion = 1;
   state.winnerId = null;
+  state.endReason = null;
   state.startedAtMs = nowMs;
   state.endedAtMs = null;
   state.resultPersistencePending = false;

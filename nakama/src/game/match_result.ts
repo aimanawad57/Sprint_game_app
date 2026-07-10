@@ -67,6 +67,7 @@ function persistPendingMatchResult(
   if (
     state.status !== MatchStatus.Finished ||
     !state.winnerId ||
+    state.endReason === MatchEndReason.Abandoned ||
     state.startedAtMs === null ||
     state.endedAtMs === null
   ) {
@@ -101,10 +102,12 @@ function persistPendingMatchResult(
   const loserProfile = readStoredProfile(loserExisting, state.endedAtMs);
   winnerProfile.gamesPlayed += 1;
   winnerProfile.wins += 1;
-  winnerProfile.bestTimeMs =
-    winnerProfile.bestTimeMs === null
-      ? durationMs
-      : Math.min(winnerProfile.bestTimeMs, durationMs);
+  if (state.endReason !== MatchEndReason.Forfeit) {
+    winnerProfile.bestTimeMs =
+      winnerProfile.bestTimeMs === null
+        ? durationMs
+        : Math.min(winnerProfile.bestTimeMs, durationMs);
+  }
   loserProfile.gamesPlayed += 1;
   loserProfile.losses += 1;
 

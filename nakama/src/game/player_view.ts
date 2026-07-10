@@ -40,6 +40,7 @@ function buildPlayerStateView(
       pile_2: {topCard: cloneCard(pile2Top)}
     },
     winnerId: state.winnerId,
-    winnerName: winner ? winner.displayName : null
+    winnerName: winner ? winner.displayName : null,
+    endReason: state.endReason
   };
 }

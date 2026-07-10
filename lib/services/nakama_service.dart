@@ -142,6 +142,26 @@ class NakamaService {
     );
   }
 
+  void abandonMatch({
+    required nakama.NakamaWebsocketClient socket,
+    required String matchId,
+  }) {
+    socket.sendMatchData(
+      matchId: matchId,
+      opCode: GameClientOpcode.abandonMatch,
+      data: const [],
+    );
+  }
+
+  Future<void> abandonAuthoritativeMatch({
+    required nakama.Session session,
+    required String matchId,
+  }) async {
+    final socket = realtimeSocket(session);
+    await joinAuthoritativeMatch(socket: socket, matchId: matchId);
+    abandonMatch(socket: socket, matchId: matchId);
+  }
+
   Future<void> closeRealtimeSocket() async {
     final socket = _socket;
     _socket = null;

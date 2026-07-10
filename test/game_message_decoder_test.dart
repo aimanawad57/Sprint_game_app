@@ -24,6 +24,7 @@ void main() {
       },
       'winnerId': null,
       'winnerName': null,
+      'endReason': null,
     };
   }
 

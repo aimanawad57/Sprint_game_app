@@ -228,6 +228,7 @@ function updateWinnerIfNeeded(
   if (player.hand.length === 0 && player.deck.length === 0) {
     state.status = MatchStatus.Finished;
     state.winnerId = player.userId;
+    state.endReason = MatchEndReason.Normal;
     state.endedAtMs = nowMs;
     state.resultPersistencePending = true;
     return true;

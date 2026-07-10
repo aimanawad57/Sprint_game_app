@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sprint_app/models/game/game_card.dart';
 import 'package:sprint_app/models/game/game_move.dart';
 import 'package:sprint_app/models/game/game_state_view.dart';
+import 'package:sprint_app/widgets/disconnected_match_banner.dart';
 import 'package:sprint_app/widgets/game_state_panel.dart';
 
 void main() {
@@ -10,6 +11,7 @@ void main() {
     String? winnerId,
     String? winnerName,
     GameMatchStatus status = GameMatchStatus.active,
+    GameMatchEndReason? endReason,
   }) {
     return GameStateView(
       stateVersion: 1,
@@ -55,6 +57,7 @@ void main() {
       ),
       winnerId: winnerId,
       winnerName: winnerName,
+      endReason: endReason,
     );
   }
 
@@ -64,6 +67,7 @@ void main() {
     String? winnerId,
     String? winnerName,
     GameMatchStatus status = GameMatchStatus.active,
+    GameMatchEndReason? endReason,
     MoveSubmitCallback? onSubmitMove,
     VoidCallback? onBack,
     VoidCallback? onViewProfile,
@@ -80,6 +84,7 @@ void main() {
               winnerId: winnerId,
               winnerName: winnerName,
               status: status,
+              endReason: endReason,
             ),
             currentUserId: currentUserId,
             onSubmitMove: onSubmitMove ?? (_, _) {},
@@ -188,6 +193,38 @@ void main() {
     expect(find.text('Back to main menu'), findsOneWidget);
   });
 
+  testWidgets('shows a forfeit win message when opponent disconnected', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      winnerName: 'Alice',
+      currentUserId: 'player-a',
+      endReason: GameMatchEndReason.forfeit,
+    );
+
+    expect(find.text('Opponent disconnected, You Won!'), findsOneWidget);
+    expect(find.text('You won'), findsNothing);
+  });
+
+  testWidgets('shows a forfeit loss message after disconnect timeout', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-b',
+      winnerName: 'Bob',
+      currentUserId: 'player-a',
+      endReason: GameMatchEndReason.forfeit,
+    );
+
+    expect(find.text('You lost by disconnect timeout.'), findsOneWidget);
+    expect(find.text('You lost'), findsNothing);
+  });
+
   testWidgets('invokes the back callback', (tester) async {
     var pressed = false;
     await pumpPanel(tester, onBack: () => pressed = true);
@@ -286,5 +323,34 @@ void main() {
 
     expect(find.byIcon(Icons.check_circle), findsNothing);
     expect(submissionCount, 0);
+  });
+
+  testWidgets('disconnected match banner shows reconnect and abandon actions', (
+    tester,
+  ) async {
+    var reconnectPressed = false;
+    var abandonPressed = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DisconnectedMatchBanner(
+            onReconnect: () => reconnectPressed = true,
+            onAbandon: () => abandonPressed = true,
+            isAbandoning: false,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('You were disconnected from the match'), findsOneWidget);
+    expect(find.text('Reconnect'), findsOneWidget);
+    expect(find.text('Abandon'), findsOneWidget);
+
+    await tester.tap(find.text('Reconnect'));
+    await tester.tap(find.text('Abandon'));
+
+    expect(reconnectPressed, isTrue);
+    expect(abandonPressed, isTrue);
   });
 }

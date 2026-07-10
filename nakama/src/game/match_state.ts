@@ -6,12 +6,19 @@ enum MatchStatus {
   Finished = "finished"
 }
 
+enum MatchEndReason {
+  Normal = "normal",
+  Forfeit = "forfeit",
+  Abandoned = "abandoned"
+}
+
 type PlayerMatchState = {
   userId: string;
   displayName: string;
   hand: Card[];
   deck: Card[];
   connected: boolean;
+  disconnectedAtMs: number | null;
 };
 
 type SprintMatchState = {
@@ -25,6 +32,7 @@ type SprintMatchState = {
   };
   stateVersion: number;
   winnerId: string | null;
+  endReason: MatchEndReason | null;
   startedAtMs: number | null;
   endedAtMs: number | null;
   resultPersistencePending: boolean;

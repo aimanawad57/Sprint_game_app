@@ -71,7 +71,7 @@ class _PlayPageState extends State<PlayPage> {
   void initState() {
     super.initState();
     _socketDisconnectSubscription = widget.nakamaService.realtimeDisconnects
-        .listen((_) => unawaited(_recoverMatchConnection()));
+        .listen((_) => _handleRealtimeDisconnect());
 
     final directMatchId = widget.directMatchId;
     if (directMatchId != null) {
@@ -98,6 +98,19 @@ class _PlayPageState extends State<PlayPage> {
         debugPrint('Match data stream failed: $error');
       },
     );
+  }
+
+  void _handleRealtimeDisconnect() {
+    if (!mounted) return;
+
+    final matchId = _matchId ?? _joiningMatchId;
+    final gameState = _gameState;
+    if (matchId != null && gameState?.status == GameMatchStatus.active) {
+      Navigator.of(context).pop(PlayExitResult.disconnectedFromMatch(matchId));
+      return;
+    }
+
+    unawaited(_recoverMatchConnection());
   }
 
   Future<void> _startMatchmaking() async {
@@ -414,6 +427,22 @@ class _PlayPageState extends State<PlayPage> {
     }
   }
 
+  void _exitPlayPage() {
+    final matchId = _matchId ?? _joiningMatchId;
+    final gameState = _gameState;
+    if (gameState?.status == GameMatchStatus.finished) {
+      Navigator.of(context).pop(const PlayExitResult.matchFinished());
+      return;
+    }
+
+    if (matchId != null && gameState?.status == GameMatchStatus.active) {
+      Navigator.of(context).pop(PlayExitResult.disconnectedFromMatch(matchId));
+      return;
+    }
+
+    Navigator.of(context).pop();
+  }
+
   void _setFailure(String message) {
     debugPrint(message);
     if (!mounted) return;
@@ -492,74 +521,87 @@ class _PlayPageState extends State<PlayPage> {
   Widget build(BuildContext context) {
     final gameState = _gameState;
     final connectionState = _connectionState;
+    final gameFinished = gameState?.status == GameMatchStatus.finished;
     final movesEnabled = connectionState?.allPlayersConnected ?? true;
     final currentUserConnected =
         connectionState?.isUserConnected(widget.nakamaSession.userId) ?? true;
-    final connectionMessage = movesEnabled
+    final connectionMessage = gameFinished || movesEnabled
         ? null
         : currentUserConnected
         ? 'Opponent disconnected. Waiting for reconnection...'
         : 'You are disconnected. Reconnecting...';
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Play')),
-      body: SafeArea(
-        child: _status == PlayQueueStatus.ready && gameState != null
-            ? GameStatePanel(
-                gameState: gameState,
-                currentUserId: widget.nakamaSession.userId,
-                onSubmitMove: _submitMove,
-                onBack: () => Navigator.of(context).pop(),
-                onViewProfile: gameState.status == GameMatchStatus.finished
-                    ? () => Navigator.of(context).pop(PlayExitAction.viewProfile)
-                    : null,
-                isSubmitting: _isMovePending,
-                feedbackMessage: _moveFeedback,
-                movesEnabled: movesEnabled,
-                connectionMessage: connectionMessage,
-              )
-            : Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Spacer(),
-                    Center(child: _buildStatusIcon()),
-                    const SizedBox(height: 24),
-                    Text(
-                      _title,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      _subtitle,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyLarge,
-                    ),
-                    const SizedBox(height: 32),
-                    if (widget.displayCode != null) ...[
-                      _MatchCodeDisplay(code: widget.displayCode!),
-                      const SizedBox(height: 32),
-                    ],
-                    if (_ticket != null)
-                      _InfoRow(label: 'Queue ticket', value: _ticket!),
-                    if (_matchId != null)
-                      _InfoRow(label: 'Match id', value: _matchId!),
-                    if (_matchedPlayerCount > 0)
-                      _InfoRow(
-                        label: 'Players matched',
-                        value: _matchedPlayerCount.toString(),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _exitPlayPage();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Play'),
+          leading: BackButton(onPressed: _exitPlayPage),
+        ),
+        body: SafeArea(
+          child: _status == PlayQueueStatus.ready && gameState != null
+              ? GameStatePanel(
+                  gameState: gameState,
+                  currentUserId: widget.nakamaSession.userId,
+                  onSubmitMove: _submitMove,
+                  onBack: _exitPlayPage,
+                  onViewProfile: gameState.status == GameMatchStatus.finished
+                      ? () => Navigator.of(context).pop(
+                          const PlayExitResult.viewProfile(),
+                        )
+                      : null,
+                  isSubmitting: _isMovePending,
+                  feedbackMessage: _moveFeedback,
+                  movesEnabled: movesEnabled,
+                  connectionMessage: connectionMessage,
+                )
+              : Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Spacer(),
+                      Center(child: _buildStatusIcon()),
+                      const SizedBox(height: 24),
+                      Text(
+                        _title,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineSmall,
                       ),
-                    const Spacer(),
-                    OutlinedButton.icon(
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.arrow_back),
-                      label: const Text('Back'),
-                    ),
-                  ],
+                      const SizedBox(height: 12),
+                      Text(
+                        _subtitle,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
+                      const SizedBox(height: 32),
+                      if (widget.displayCode != null) ...[
+                        _MatchCodeDisplay(code: widget.displayCode!),
+                        const SizedBox(height: 32),
+                      ],
+                      if (_ticket != null)
+                        _InfoRow(label: 'Queue ticket', value: _ticket!),
+                      if (_matchId != null)
+                        _InfoRow(label: 'Match id', value: _matchId!),
+                      if (_matchedPlayerCount > 0)
+                        _InfoRow(
+                          label: 'Players matched',
+                          value: _matchedPlayerCount.toString(),
+                        ),
+                      const Spacer(),
+                      OutlinedButton.icon(
+                        onPressed: _exitPlayPage,
+                        icon: const Icon(Icons.arrow_back),
+                        label: const Text('Back'),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+        ),
       ),
     );
   }

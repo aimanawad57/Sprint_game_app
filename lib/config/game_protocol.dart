@@ -1,5 +1,6 @@
 abstract final class GameClientOpcode {
   static const int submitMove = 1;
+  static const int abandonMatch = 2;
 }
 
 abstract final class GameServerOpcode {

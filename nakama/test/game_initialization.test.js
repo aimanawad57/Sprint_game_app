@@ -22,6 +22,8 @@ function loadRuntimeForTest() {
     "reshuffleCenterPiles," +
     "resolveStuckState," +
     "resolveAndBroadcastStuckState," +
+    "resolveDisconnectTimeout," +
+    "abandonMatch," +
     "persistPendingMatchResult," +
     "rpcGetOrCreateProfile," +
     "sprintMatchJoinAttempt," +
@@ -29,6 +31,7 @@ function loadRuntimeForTest() {
     "sprintMatchLeave," +
     "sprintMatchLoop," +
     "MatchStatus," +
+    "MatchEndReason," +
     "CardColor," +
     "CardShape," +
     "ClientOpcode," +
@@ -471,6 +474,112 @@ test("finished matches resynchronize privately without persisting results twice"
   assert.equal(state.resultPersistencePending, false);
 });
 
+test("disconnect timeout does not finish before 30 seconds and reconnect clears timer", () => {
+  const state = createInitializedState(runtime);
+  state.players["player-b"].connected = false;
+  state.players["player-b"].disconnectedAtMs = 1000;
+  delete state.presences["player-b"];
+
+  assert.deepEqual(
+    normalize(runtime.resolveDisconnectTimeout(state, 30_999)),
+    {finished: false, reason: null}
+  );
+  assert.equal(state.status, runtime.MatchStatus.Active);
+
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  runtime.sprintMatchJoin(
+    null,
+    logger,
+    null,
+    dispatcher,
+    10,
+    state,
+    [{userId: "player-b", sessionId: "player-b-reconnect"}]
+  );
+
+  assert.equal(state.players["player-b"].connected, true);
+  assert.equal(state.players["player-b"].disconnectedAtMs, null);
+  assert.deepEqual(
+    normalize(runtime.resolveDisconnectTimeout(state, 40_000)),
+    {finished: false, reason: null}
+  );
+});
+
+test("disconnect timeout declares the connected opponent winner by forfeit", () => {
+  const state = createInitializedState(runtime);
+  state.players["player-b"].connected = false;
+  state.players["player-b"].disconnectedAtMs = 1000;
+  delete state.presences["player-b"];
+  const versionBeforeTimeout = state.stateVersion;
+
+  const result = runtime.resolveDisconnectTimeout(state, 31_000);
+
+  assert.deepEqual(normalize(result), {
+    finished: true,
+    reason: runtime.MatchEndReason.Forfeit
+  });
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, "player-a");
+  assert.equal(state.endReason, runtime.MatchEndReason.Forfeit);
+  assert.equal(state.stateVersion, versionBeforeTimeout + 1);
+  assert.equal(state.resultPersistencePending, true);
+  assert.equal(state.resultPersisted, false);
+});
+
+test("disconnect timeout abandons when both players are disconnected", () => {
+  const state = createInitializedState(runtime);
+  state.playerOrder.forEach((userId) => {
+    state.players[userId].connected = false;
+    state.players[userId].disconnectedAtMs = 1000;
+    delete state.presences[userId];
+  });
+  const versionBeforeTimeout = state.stateVersion;
+
+  const result = runtime.resolveDisconnectTimeout(state, 31_000);
+
+  assert.deepEqual(normalize(result), {
+    finished: true,
+    reason: runtime.MatchEndReason.Abandoned
+  });
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, null);
+  assert.equal(state.endReason, runtime.MatchEndReason.Abandoned);
+  assert.equal(state.stateVersion, versionBeforeTimeout + 1);
+  assert.equal(state.resultPersistencePending, false);
+});
+
+test("disconnect timeout does not apply while waiting", () => {
+  const state = runtime.createWaitingMatchState(["player-a", "player-b"]);
+  state.players["player-a"].connected = false;
+  state.players["player-a"].disconnectedAtMs = 1000;
+
+  assert.deepEqual(
+    normalize(runtime.resolveDisconnectTimeout(state, 31_000)),
+    {finished: false, reason: null}
+  );
+  assert.equal(state.status, runtime.MatchStatus.Waiting);
+});
+
+test("explicit abandon immediately forfeits the sender", () => {
+  const state = createInitializedState(runtime);
+  const versionBeforeAbandon = state.stateVersion;
+
+  assert.equal(
+    runtime.abandonMatch(state, {userId: "player-b"}, 5000),
+    true
+  );
+
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, "player-a");
+  assert.equal(state.endReason, runtime.MatchEndReason.Forfeit);
+  assert.equal(state.endedAtMs, 5000);
+  assert.equal(state.stateVersion, versionBeforeAbandon + 1);
+  assert.equal(state.resultPersistencePending, true);
+  assert.equal(runtime.abandonMatch(state, {userId: "player-b"}, 6000), false);
+  assert.equal(runtime.abandonMatch(state, {userId: "outsider"}, 6000), false);
+});
+
 test("match lifecycle rejects users outside canonical player order", () => {
   const state = runtime.createWaitingMatchState(["player-a", "player-b"]);
   const logger = {info() {}, warn() {}, error() {}};
@@ -828,6 +937,60 @@ test("sprintMatchLoop broadcasts private state updates and targeted move rejecti
   assert.equal(calls.at(-1).presences[0].userId, "player-a");
 });
 
+test("sprintMatchLoop sends gameEnded when disconnect timeout fires", () => {
+  const state = createInitializedState(runtime);
+  state.players["player-b"].connected = false;
+  state.players["player-b"].disconnectedAtMs = Date.now() - 31_000;
+  delete state.presences["player-b"];
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    }
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+
+  runtime.sprintMatchLoop(null, logger, null, dispatcher, 1, state, []);
+
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, "player-a");
+  assert.equal(state.endReason, runtime.MatchEndReason.Forfeit);
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.GameEnded
+  ]);
+  assert.equal(calls[0].presences[0].userId, "player-a");
+  assert.equal(calls[0].data.endReason, runtime.MatchEndReason.Forfeit);
+});
+
+test("sprintMatchLoop handles explicit abandon opcode as forfeit", () => {
+  const state = createInitializedState(runtime);
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    }
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+
+  runtime.sprintMatchLoop(null, logger, null, dispatcher, 1, state, [
+    {
+      opCode: runtime.ClientOpcode.AbandonMatch,
+      sender: {userId: "player-b", sessionId: "player-b-session"},
+      data: ""
+    }
+  ]);
+
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, "player-a");
+  assert.equal(state.endReason, runtime.MatchEndReason.Forfeit);
+  assert.equal(state.resultPersistencePending, true);
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.GameEnded,
+    runtime.ServerOpcode.GameEnded
+  ]);
+  assert.equal(calls[0].data.endReason, runtime.MatchEndReason.Forfeit);
+});
+
 function createStuckResetState(runtime) {
   const state = createInitializedState(runtime);
   state.stateVersion = 7;
@@ -966,6 +1129,7 @@ function finishedStateForStatistics(runtime) {
   const state = createInitializedState(runtime);
   state.status = runtime.MatchStatus.Finished;
   state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Normal;
   state.startedAtMs = 1000;
   state.endedAtMs = 6000;
   state.resultPersistencePending = true;
@@ -1097,6 +1261,47 @@ test("profile persistence creates missing profiles and preserves a faster best t
   assert.equal(loserWrite.version, undefined);
   assert.equal(loserWrite.permissionRead, 1);
   assert.equal(loserWrite.permissionWrite, 0);
+});
+
+test("forfeit persistence updates win and loss without changing best time", () => {
+  const state = finishedStateForStatistics(runtime);
+  state.endReason = runtime.MatchEndReason.Forfeit;
+  const writes = [];
+  const nk = {
+    storageRead() {
+      return [
+        storedProfile("player-a", "winner-version", {
+          gamesPlayed: 2,
+          wins: 1,
+          losses: 1,
+          bestTimeMs: 7000,
+          createdAt: "created-a"
+        }),
+        storedProfile("player-b", "loser-version", {
+          gamesPlayed: 3,
+          wins: 2,
+          losses: 1,
+          bestTimeMs: 4000,
+          createdAt: "created-b"
+        })
+      ];
+    },
+    multiUpdate(_accounts, storageWrites) {
+      writes.push(...storageWrites);
+      return {storageWriteAcks: [], walletUpdateAcks: []};
+    }
+  };
+
+  runtime.persistPendingMatchResult(state, nk);
+
+  const winnerWrite = writes.find((write) => write.userId === "player-a");
+  const loserWrite = writes.find((write) => write.userId === "player-b");
+  assert.equal(winnerWrite.value.gamesPlayed, 3);
+  assert.equal(winnerWrite.value.wins, 2);
+  assert.equal(winnerWrite.value.bestTimeMs, 7000);
+  assert.equal(loserWrite.value.gamesPlayed, 4);
+  assert.equal(loserWrite.value.losses, 2);
+  assert.equal(loserWrite.value.bestTimeMs, 4000);
 });
 
 test("failed profile persistence remains pending for a later tick", () => {

@@ -193,6 +193,12 @@ class _GameStatePanelState extends State<GameStatePanel> {
       return 'Match finished';
     }
 
+    if (gameState.endReason == GameMatchEndReason.forfeit) {
+      return winnerId == widget.currentUserId
+          ? 'Opponent disconnected, You Won!'
+          : 'You lost by disconnect timeout.';
+    }
+
     return winnerId == widget.currentUserId ? 'You won' : 'You lost';
   }
 

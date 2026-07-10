@@ -6,8 +6,10 @@ import '../models/player_profile.dart';
 import '../models/play_exit_action.dart';
 import '../services/nakama_service.dart';
 import '../widgets/backend_status_panel.dart';
+import '../widgets/disconnected_match_banner.dart';
 import 'create_join_match_screen.dart';
 import 'login_screen.dart';
+import 'play_page.dart';
 import 'profile_page.dart';
 
 enum BackendStatus { checking, connected, failed }
@@ -34,6 +36,8 @@ class _MainPageState extends State<MainPage> {
   BackendStatus _backendStatus = BackendStatus.checking;
   ProfileStatus _profileStatus = ProfileStatus.loading;
   PlayerProfile? _playerProfile;
+  String? _resumableMatchId;
+  bool _isAbandoningMatch = false;
 
   @override
   void initState() {
@@ -86,7 +90,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _openPlayPage() async {
-    final result = await Navigator.of(context).push<PlayExitAction>(
+    final result = await Navigator.of(context).push<PlayExitResult>(
       MaterialPageRoute(
         builder: (context) {
           return CreateJoinMatchScreen(
@@ -98,14 +102,101 @@ class _MainPageState extends State<MainPage> {
     );
 
     if (!mounted) return;
+    _handlePlayExitResult(result);
+    if (!mounted) return;
     setState(() {
       _profileStatus = ProfileStatus.loading;
     });
     await _loadOrCreatePlayerProfile();
 
     if (!mounted) return;
-    if (result == PlayExitAction.viewProfile) {
+    if (result?.action == PlayExitAction.viewProfile) {
       _openProfilePage();
+    }
+  }
+
+  Future<void> _reconnectToMatch() async {
+    final matchId = _resumableMatchId;
+    if (matchId == null) return;
+
+    final result = await Navigator.of(context).push<PlayExitResult>(
+      MaterialPageRoute(
+        builder: (context) {
+          return PlayPage(
+            nakamaService: widget.nakamaService,
+            nakamaSession: widget.nakamaSession,
+            directMatchId: matchId,
+          );
+        },
+      ),
+    );
+
+    if (!mounted) return;
+    _handlePlayExitResult(result);
+    setState(() {
+      _profileStatus = ProfileStatus.loading;
+    });
+    await _loadOrCreatePlayerProfile();
+
+    if (!mounted) return;
+    if (result?.action == PlayExitAction.viewProfile) {
+      _openProfilePage();
+    }
+  }
+
+  Future<void> _abandonResumableMatch() async {
+    final matchId = _resumableMatchId;
+    if (matchId == null || _isAbandoningMatch) return;
+
+    setState(() {
+      _isAbandoningMatch = true;
+    });
+
+    try {
+      await widget.nakamaService.abandonAuthoritativeMatch(
+        session: widget.nakamaSession,
+        matchId: matchId,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _resumableMatchId = null;
+        _profileStatus = ProfileStatus.loading;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      await _loadOrCreatePlayerProfile();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Match abandoned.')),
+      );
+    } catch (error) {
+      debugPrint('Could not abandon match: $error');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not abandon the match.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAbandoningMatch = false;
+        });
+      }
+    }
+  }
+
+  void _handlePlayExitResult(PlayExitResult? result) {
+    if (result?.action == PlayExitAction.disconnectedFromMatch) {
+      setState(() {
+        _resumableMatchId = result?.matchId;
+      });
+      return;
+    }
+
+    if (result?.action == PlayExitAction.viewProfile ||
+        result?.action == PlayExitAction.matchFinished) {
+      setState(() {
+        _resumableMatchId = null;
+      });
     }
   }
 
@@ -195,6 +286,14 @@ class _MainPageState extends State<MainPage> {
               const SizedBox(height: 8),
               Text(widget.email),
               const SizedBox(height: 28),
+              if (_resumableMatchId != null) ...[
+                DisconnectedMatchBanner(
+                  onReconnect: _reconnectToMatch,
+                  onAbandon: _isAbandoningMatch ? null : _abandonResumableMatch,
+                  isAbandoning: _isAbandoningMatch,
+                ),
+                const SizedBox(height: 20),
+              ],
               FilledButton.icon(
                 onPressed: _openPlayPage,
                 icon: const Icon(Icons.play_arrow),

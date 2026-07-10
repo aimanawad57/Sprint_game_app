@@ -7,7 +7,11 @@ void main() {
     return {'card_id': id, 'color': color, 'shape': shape, 'count': count};
   }
 
-  Map<String, dynamic> validState({Object? winnerId, Object? winnerName}) {
+  Map<String, dynamic> validState({
+    Object? winnerId,
+    Object? winnerName,
+    Object? endReason,
+  }) {
     return {
       'stateVersion': 1,
       'status': 'active',
@@ -25,6 +29,7 @@ void main() {
       },
       'winnerId': winnerId,
       'winnerName': winnerName,
+      'endReason': endReason,
     };
   }
 
@@ -42,6 +47,7 @@ void main() {
       expect(state.pile2.topCard.cardId, 'card_060');
       expect(state.winnerId, isNull);
       expect(state.winnerName, isNull);
+      expect(state.endReason, isNull);
     });
 
     test('accepts a non-empty winner id and winner name', () {
@@ -50,6 +56,21 @@ void main() {
       );
       expect(state.winnerId, 'player-a');
       expect(state.winnerName, 'Alice');
+    });
+
+    test('accepts valid end reasons', () {
+      expect(
+        GameStateView.fromJson(validState(endReason: 'normal')).endReason,
+        GameMatchEndReason.normal,
+      );
+      expect(
+        GameStateView.fromJson(validState(endReason: 'forfeit')).endReason,
+        GameMatchEndReason.forfeit,
+      );
+      expect(
+        GameStateView.fromJson(validState(endReason: 'abandoned')).endReason,
+        GameMatchEndReason.abandoned,
+      );
     });
 
     test('creates an unmodifiable hand', () {
@@ -103,6 +124,10 @@ void main() {
       );
       expect(
         () => GameStateView.fromJson(validState(winnerName: '')),
+        throwsFormatException,
+      );
+      expect(
+        () => GameStateView.fromJson(validState(endReason: 'timeout')),
         throwsFormatException,
       );
     });

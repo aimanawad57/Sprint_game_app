@@ -37,7 +37,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
   }
 
   Future<void> _openQuickMatch() async {
-    final result = await Navigator.of(context).push<PlayExitAction>(
+    final result = await Navigator.of(context).push<PlayExitResult>(
       MaterialPageRoute(
         builder: (context) {
           return PlayPage(
@@ -61,7 +61,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
       );
 
       if (!mounted) return;
-      final result = await Navigator.of(context).push<PlayExitAction>(
+      final result = await Navigator.of(context).push<PlayExitResult>(
         MaterialPageRoute(
           builder: (context) {
             return PlayPage(
@@ -103,7 +103,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
       );
 
       if (!mounted) return;
-      final result = await Navigator.of(context).push<PlayExitAction>(
+      final result = await Navigator.of(context).push<PlayExitResult>(
         MaterialPageRoute(
           builder: (context) {
             return PlayPage(
@@ -126,7 +126,7 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
     }
   }
 
-  void _bubblePlayResult(PlayExitAction? result) {
+  void _bubblePlayResult(PlayExitResult? result) {
     if (!mounted || result == null) return;
     Navigator.of(context).pop(result);
   }

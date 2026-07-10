@@ -1,6 +1,7 @@
 const invalidMatchParametersMessage =
   "expectedUserIds must contain exactly two distinct, non-empty user IDs";
 const unauthorizedJoinMessage = "This user was not assigned to this match.";
+const disconnectTimeoutMs = 30 * 1000;
 
 function displayNameFromPresence(presence: nkruntime.Presence): string | null {
   const username = presence.username;
@@ -87,14 +88,16 @@ function createWaitingMatchState(
     displayName: "Player",
     hand: [],
     deck: [],
-    connected: false
+    connected: false,
+    disconnectedAtMs: null
   };
   players[playerBId] = {
     userId: playerBId,
     displayName: "Player",
     hand: [],
     deck: [],
-    connected: false
+    connected: false,
+    disconnectedAtMs: null
   };
 
   return {
@@ -108,6 +111,7 @@ function createWaitingMatchState(
     },
     stateVersion: 0,
     winnerId: null,
+    endReason: null,
     startedAtMs: null,
     endedAtMs: null,
     resultPersistencePending: false,
@@ -126,7 +130,8 @@ function createOpenWaitingMatchState(creatorId: string): SprintMatchState {
     displayName: "Player",
     hand: [],
     deck: [],
-    connected: false
+    connected: false,
+    disconnectedAtMs: null
   };
 
   return {
@@ -140,6 +145,7 @@ function createOpenWaitingMatchState(creatorId: string): SprintMatchState {
     },
     stateVersion: 0,
     winnerId: null,
+    endReason: null,
     startedAtMs: null,
     endedAtMs: null,
     resultPersistencePending: false,
@@ -254,6 +260,118 @@ function sendPlayerStateView(
     JSON.stringify(buildPlayerStateView(state, userId)),
     [presence]
   );
+}
+
+function finishMatchByForfeit(
+  state: SprintMatchState,
+  forfeitingUserId: string,
+  nowMs: number
+): boolean {
+  if (state.status !== MatchStatus.Active) {
+    return false;
+  }
+
+  const forfeitingPlayer = state.players[forfeitingUserId];
+  if (!forfeitingPlayer) {
+    return false;
+  }
+
+  const winnerId =
+    state.playerOrder[0] === forfeitingUserId
+      ? state.playerOrder[1]
+      : state.playerOrder[0];
+  if (!state.players[winnerId]) {
+    return false;
+  }
+
+  state.status = MatchStatus.Finished;
+  state.winnerId = winnerId;
+  state.endReason = MatchEndReason.Forfeit;
+  state.endedAtMs = nowMs;
+  state.stateVersion += 1;
+  state.resultPersistencePending = true;
+  state.resultPersisted = false;
+  return true;
+}
+
+function finishMatchAsAbandoned(
+  state: SprintMatchState,
+  nowMs: number
+): boolean {
+  if (state.status !== MatchStatus.Active) {
+    return false;
+  }
+
+  state.status = MatchStatus.Finished;
+  state.winnerId = null;
+  state.endReason = MatchEndReason.Abandoned;
+  state.endedAtMs = nowMs;
+  state.stateVersion += 1;
+  state.resultPersistencePending = false;
+  state.resultPersisted = false;
+  return true;
+}
+
+type DisconnectTimeoutResult = {
+  finished: boolean;
+  reason: MatchEndReason.Forfeit | MatchEndReason.Abandoned | null;
+};
+
+function resolveDisconnectTimeout(
+  state: SprintMatchState,
+  nowMs: number,
+  timeoutMs: number = disconnectTimeoutMs
+): DisconnectTimeoutResult {
+  if (state.status !== MatchStatus.Active) {
+    return {finished: false, reason: null};
+  }
+
+  const disconnectedPlayers = state.playerOrder.filter((userId) => {
+    const player = state.players[userId];
+    return player && !player.connected && player.disconnectedAtMs !== null;
+  });
+  const timedOutPlayers = disconnectedPlayers.filter((userId) => {
+    const disconnectedAtMs = state.players[userId].disconnectedAtMs;
+    return disconnectedAtMs !== null && nowMs - disconnectedAtMs >= timeoutMs;
+  });
+
+  if (timedOutPlayers.length === 0) {
+    return {finished: false, reason: null};
+  }
+
+  const connectedPlayers = state.playerOrder.filter((userId) => {
+    const player = state.players[userId];
+    return player?.connected === true && state.presences[userId] !== undefined;
+  });
+
+  if (connectedPlayers.length === 1 && disconnectedPlayers.length === 1) {
+    return {
+      finished: finishMatchByForfeit(state, disconnectedPlayers[0], nowMs),
+      reason: MatchEndReason.Forfeit
+    };
+  }
+
+  if (connectedPlayers.length === 0 && disconnectedPlayers.length === state.playerOrder.length) {
+    return {
+      finished: finishMatchAsAbandoned(state, nowMs),
+      reason: MatchEndReason.Abandoned
+    };
+  }
+
+  return {finished: false, reason: null};
+}
+
+function abandonMatch(
+  state: SprintMatchState,
+  sender: nkruntime.Presence | null,
+  nowMs: number = Date.now()
+): boolean {
+  const userId = sender?.userId;
+  if (!userId || state.playerOrder.indexOf(userId) === -1) {
+    return false;
+  }
+
+  return finishMatchByForfeit(state, userId, nowMs);
 }
 
 function resolveAndBroadcastStuckState(
@@ -379,7 +497,8 @@ function sprintMatchJoin(
         displayName: resolvePlayerDisplayName(nk, logger, presence),
         hand: [],
         deck: [],
-        connected: false
+        connected: false,
+        disconnectedAtMs: null
       };
       logger.info("Sprint match code redeemed by user: %s", presence.userId);
     }
@@ -402,6 +521,7 @@ function sprintMatchJoin(
     );
     state.presences[presence.userId] = presence;
     player.connected = true;
+    player.disconnectedAtMs = null;
     changes.push({
       userId: presence.userId,
       status: ConnectionStatus.Connected
@@ -489,9 +609,19 @@ function sprintMatchLeave(
       );
       return;
     }
+    if (!currentPresence && !player.connected) {
+      logger.info(
+        "Ignored duplicate sprint leave for disconnected player %s",
+        presence.userId
+      );
+      return;
+    }
 
     delete state.presences[presence.userId];
     player.connected = false;
+    if (state.status === MatchStatus.Active) {
+      player.disconnectedAtMs = Date.now();
+    }
     changes.push({
       userId: presence.userId,
       status: ConnectionStatus.Disconnected
@@ -534,7 +664,29 @@ function sprintMatchLoop(
     }
   }
 
+  const timeoutResult = resolveDisconnectTimeout(state, Date.now());
+  if (timeoutResult.finished) {
+    logger.info(
+      "Sprint match finished by disconnect timeout with reason %s and winner %s",
+      state.endReason || "unknown",
+      state.winnerId || "none"
+    );
+    sendPlayerStateViews(dispatcher, state, ServerOpcode.GameEnded);
+  }
+
   messages.forEach((message) => {
+    if (message.opCode === ClientOpcode.AbandonMatch) {
+      if (abandonMatch(state, message.sender || null)) {
+        logger.info(
+          "Sprint match abandoned by player %s; winner %s",
+          message.sender?.userId || "unknown",
+          state.winnerId || "none"
+        );
+        sendPlayerStateViews(dispatcher, state, ServerOpcode.GameEnded);
+      }
+      return;
+    }
+
     if (message.opCode !== ClientOpcode.SubmitMove) {
       return;
     }

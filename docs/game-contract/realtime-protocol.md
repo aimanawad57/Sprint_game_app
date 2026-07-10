@@ -10,6 +10,7 @@ gameplay protocol is implemented.
 | Opcode | Name | Purpose |
 |---:|---|---|
 | 1 | `submitMove` | Attempt to play a card onto a center pile. |
+| 2 | `abandonMatch` | Explicitly forfeit the active match. |
 
 ### Server to client
 
@@ -84,7 +85,8 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
     }
   },
   "winnerId": null,
-  "winnerName": null
+  "winnerName": null,
+  "endReason": null
 }
 ```
 
@@ -97,6 +99,8 @@ When the game is finished, `winnerId` contains the winner's stable user ID and
 `winnerName` contains the winner's Nakama account display name for UI
 rendering. If the account display name cannot be resolved, the backend falls
 back to the realtime presence username and then `"Player"`.
+`endReason` is `null` until the match ends, then one of `normal`, `forfeit`,
+or `abandoned`.
 
 Opcodes `11` (`stateUpdate`) and `14` (`gameEnded`) are also implemented.
 Nakama sends a fresh private player view after every accepted move. Flutter
@@ -178,6 +182,29 @@ Presence-only changes do not increment `stateVersion`. Connecting or
 disconnecting does not move cards and must not make a submitted gameplay move
 stale. Initial card dealing will still establish gameplay version `1`.
 
+## Disconnect timeout and abandonment
+
+When a player leaves an active match, Nakama records the disconnect time and
+pauses gameplay by rejecting moves with `player_disconnected`. If the player
+reconnects before timeout, the disconnect timer is cleared and the player
+receives the existing opcode `11` private resynchronization snapshot.
+
+If exactly one player remains disconnected for 30 seconds, the disconnected
+player forfeits. Nakama marks the match `finished`, sets the connected opponent
+as `winnerId`, sets `endReason: "forfeit"`, increments `stateVersion`, and
+sends opcode `14` to connected presences. Flutter shows the winner
+`Opponent disconnected, You Won!`; a forfeiting player who later reconnects to
+the finished match sees the forfeit loss state.
+
+If both players are disconnected when the timeout fires, Nakama finishes the
+match with `winnerId: null` and `endReason: "abandoned"`. This abandoned result
+does not update player statistics.
+
+Flutter can also send opcode `2` (`abandonMatch`) while joined to an active
+match. Nakama validates that the sender is one of the match players, declares
+the opponent winner immediately, and uses the same `endReason: "forfeit"` as
+the automatic timeout path.
+
 ## Match-result statistics
 
 Flutter loads the current player profile through authenticated RPC
@@ -190,6 +217,9 @@ When a player empties both their hand and private deck, Nakama sends opcode
 profiles increment `gamesPlayed`; the winner increments `wins`, the loser
 increments `losses`, and the winner's `bestTimeMs` becomes the lower of its
 existing value and the authoritative match duration.
+
+Forfeit results also update `gamesPlayed`, `wins`, and `losses`, but do not
+update `bestTimeMs`. Abandoned results do not update profile statistics.
 
 Both profile updates use one atomic Nakama storage operation. Match-state
 guards prevent the same result from being applied twice, and a failed write

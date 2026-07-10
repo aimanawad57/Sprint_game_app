@@ -4,7 +4,8 @@ enum PileId {
 }
 
 enum ClientOpcode {
-  SubmitMove = 1
+  SubmitMove = 1,
+  AbandonMatch = 2
 }
 
 enum ServerOpcode {
@@ -58,4 +59,5 @@ type PlayerStateView = {
   };
   winnerId: string | null;
   winnerName: string | null;
+  endReason: MatchEndReason | null;
 };

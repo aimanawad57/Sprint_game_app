@@ -2,6 +2,8 @@ import 'game_card.dart';
 
 enum GameMatchStatus { waiting, active, finished }
 
+enum GameMatchEndReason { normal, forfeit, abandoned }
+
 class CenterPileView {
   const CenterPileView({required this.topCard});
 
@@ -28,6 +30,7 @@ class GameStateView {
     required this.pile2,
     required this.winnerId,
     required this.winnerName,
+    required this.endReason,
   }) : myHand = List<GameCard>.unmodifiable(myHand);
 
   final int stateVersion;
@@ -40,6 +43,7 @@ class GameStateView {
   final CenterPileView pile2;
   final String? winnerId;
   final String? winnerName;
+  final GameMatchEndReason? endReason;
 
   factory GameStateView.fromJson(Map<String, dynamic> json) {
     final handJson = json['myHand'];
@@ -107,6 +111,7 @@ class GameStateView {
       ),
       winnerId: winnerValue as String?,
       winnerName: winnerNameValue as String?,
+      endReason: _parseEndReason(json['endReason']),
     );
   }
 }
@@ -140,4 +145,19 @@ GameMatchStatus _parseStatus(Object? value) {
   }
 
   throw FormatException('Unsupported status: $value');
+}
+
+GameMatchEndReason? _parseEndReason(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  if (value is! String) {
+    throw const FormatException('endReason must be null or a string');
+  }
+
+  for (final reason in GameMatchEndReason.values) {
+    if (reason.name == value) return reason;
+  }
+
+  throw FormatException('Unsupported endReason: $value');
 }
