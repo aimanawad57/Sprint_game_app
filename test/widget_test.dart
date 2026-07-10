@@ -6,6 +6,27 @@ import 'package:sprint_app/models/game/game_state_view.dart';
 import 'package:sprint_app/widgets/disconnected_match_banner.dart';
 import 'package:sprint_app/widgets/game_state_panel.dart';
 
+Finder _gameScrollable() => find
+    .descendant(
+      of: find.byKey(const ValueKey('gameStatePanelScroll')),
+      matching: find.byType(Scrollable),
+    )
+    .first;
+
+// scrollUntilVisible tolerates a target that isn't built yet (it blind-drags
+// the outer list first), but only positions it approximately. ensureVisible
+// requires the element to already exist, but then walks every ancestor
+// scrollable (including the nested horizontal hand row) to reveal it
+// precisely. Combining both handles cards nested inside the hand row.
+Future<void> revealAndSettle(WidgetTester tester, Finder finder) async {
+  await tester.scrollUntilVisible(finder, 200, scrollable: _gameScrollable());
+  await tester.ensureVisible(finder);
+  // A plain pump (not pumpAndSettle) flushes the now-complete scroll
+  // animation without waiting on unrelated perpetual animations elsewhere
+  // in the tree, e.g. the isSubmitting spinner.
+  await tester.pump();
+}
+
 void main() {
   GameStateView buildState({
     String? winnerId,
@@ -105,20 +126,26 @@ void main() {
 
     expect(find.text('active'), findsOneWidget);
     expect(find.text('State version'), findsOneWidget);
-    expect(find.text('Hand count'), findsOneWidget);
 
-    for (final cardText in <String>[
-      'orange • diamond • 4',
-      'purple • house • 5',
-      'red • star • 1',
-      'blue • tree • 2',
-      'green • circle • 3',
-    ]) {
-      await tester.scrollUntilVisible(find.text(cardText), 150);
-      expect(find.text(cardText), findsOneWidget);
+    final opponentDeck = find.byKey(const ValueKey('opponentDeck'));
+    await revealAndSettle(tester, opponentDeck);
+    expect(opponentDeck, findsOneWidget);
+    expect(find.byKey(const ValueKey('opponentHand')), findsOneWidget);
+
+    final pile1 = find.byKey(const ValueKey('centerPile1'));
+    await revealAndSettle(tester, pile1);
+    expect(pile1, findsOneWidget);
+    expect(find.byKey(const ValueKey('centerPile2')), findsOneWidget);
+
+    for (final cardId in <String>['card_001', 'card_002', 'card_003']) {
+      final card = find.byKey(ValueKey(cardId));
+      await revealAndSettle(tester, card);
+      expect(card, findsOneWidget);
     }
 
-    expect(find.text('Deck count'), findsOneWidget);
+    final myDeck = find.byKey(const ValueKey('myDeck'));
+    await revealAndSettle(tester, myDeck);
+    expect(myDeck, findsOneWidget);
     expect(find.text('Winner'), findsNothing);
   });
 
@@ -130,7 +157,7 @@ void main() {
       winnerId: 'player-a',
       winnerName: 'Alice',
     );
-    await tester.scrollUntilVisible(find.text('Alice'), 200);
+    await revealAndSettle(tester, find.text('Alice'));
 
     expect(find.text('Winner'), findsOneWidget);
     expect(find.text('Alice'), findsOneWidget);
@@ -150,11 +177,12 @@ void main() {
 
     expect(find.text('Game finished'), findsOneWidget);
     expect(find.text('You won'), findsOneWidget);
-    expect(
-      find.text('The match has ended. Move controls are disabled.'),
-      findsOneWidget,
+    final endedMessage = find.text(
+      'The match has ended. Move controls are disabled.',
     );
-    await tester.scrollUntilVisible(find.text('Back to main menu'), 200);
+    await revealAndSettle(tester, endedMessage);
+    expect(endedMessage, findsOneWidget);
+    await revealAndSettle(tester, find.text('Back to main menu'));
     expect(find.text('Back to main menu'), findsOneWidget);
   });
 
@@ -170,8 +198,9 @@ void main() {
       onViewProfile: () => pressed = true,
     );
 
-    await tester.scrollUntilVisible(find.text('View profile'), 200);
-    await tester.tap(find.text('View profile'));
+    final viewProfile = find.text('View profile');
+    await revealAndSettle(tester, viewProfile);
+    await tester.tap(viewProfile);
 
     expect(pressed, isTrue);
   });
@@ -187,9 +216,9 @@ void main() {
 
     expect(find.text('Game finished'), findsOneWidget);
     expect(find.text('You lost'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Bob'), 200);
+    await revealAndSettle(tester, find.text('Bob'));
     expect(find.text('Bob'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Back to main menu'), 200);
+    await revealAndSettle(tester, find.text('Back to main menu'));
     expect(find.text('Back to main menu'), findsOneWidget);
   });
 
@@ -228,8 +257,9 @@ void main() {
   testWidgets('invokes the back callback', (tester) async {
     var pressed = false;
     await pumpPanel(tester, onBack: () => pressed = true);
-    await tester.scrollUntilVisible(find.text('Back'), 200);
-    await tester.tap(find.text('Back'));
+    final back = find.text('Back');
+    await revealAndSettle(tester, back);
+    await tester.tap(back);
 
     expect(pressed, isTrue);
   });
@@ -245,15 +275,14 @@ void main() {
       },
     );
 
-    final handCard = find.text('red • star • 1');
-    await tester.scrollUntilVisible(handCard, 150);
+    final handCard = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, handCard);
     await tester.tap(handCard);
     await tester.pump();
     expect(find.byIcon(Icons.check_circle), findsOneWidget);
 
-    final pile = find.text('Pile 1');
-    await tester.ensureVisible(pile);
-    await tester.pumpAndSettle();
+    final pile = find.byKey(const ValueKey('centerPile1'));
+    await revealAndSettle(tester, pile);
     await tester.tap(pile);
 
     expect(submittedCardId, 'card_001');
@@ -271,11 +300,9 @@ void main() {
       find.text('That card does not match the center card.'),
       findsOneWidget,
     );
-    await tester.scrollUntilVisible(
-      find.text('Waiting for the server...'),
-      150,
-    );
-    expect(find.text('Waiting for the server...'), findsOneWidget);
+    final waiting = find.text('Waiting for the server...');
+    await revealAndSettle(tester, waiting);
+    expect(waiting, findsOneWidget);
   });
 
   testWidgets('does not allow moves after the game finishes', (tester) async {
@@ -288,8 +315,8 @@ void main() {
     );
 
     expect(find.text('Game finished'), findsOneWidget);
-    final handCard = find.text('red • star • 1');
-    await tester.scrollUntilVisible(handCard, 150);
+    final handCard = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, handCard);
     await tester.tap(handCard, warnIfMissed: false);
     await tester.pump();
 
@@ -310,14 +337,14 @@ void main() {
       find.text('Opponent disconnected. Waiting for reconnection...'),
       findsOneWidget,
     );
-    expect(
-      find.text('Moves are paused until both players are connected.'),
-      findsOneWidget,
+    final pausedMessage = find.text(
+      'Moves are paused until both players are connected.',
     );
+    await revealAndSettle(tester, pausedMessage);
+    expect(pausedMessage, findsOneWidget);
 
-    await tester.drag(find.byType(ListView), const Offset(0, -500));
-    await tester.pumpAndSettle();
     final handCard = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, handCard);
     expect(handCard, findsOneWidget);
     await tester.tap(handCard);
     await tester.pump();
