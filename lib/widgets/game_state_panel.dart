@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/game/game_card.dart';
 import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
+import 'game_card_shape.dart';
 
 typedef MoveSubmitCallback = void Function(String cardId, GamePileId pileId);
 
@@ -263,15 +264,51 @@ class _CardTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
     return Card(
-      color: selected ? Theme.of(context).colorScheme.primaryContainer : null,
-      child: ListTile(
-        title: Text(label),
-        subtitle: Text(
-          '${card.color.name} • ${card.shape.name} • ${card.count}',
-        ),
-        trailing: selected ? const Icon(Icons.check_circle) : null,
+      color: selected ? colors.primaryContainer : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: selected
+            ? BorderSide(color: colors.primary, width: 2)
+            : BorderSide.none,
+      ),
+      child: InkWell(
         onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label, style: Theme.of(context).textTheme.labelLarge),
+                    const SizedBox(height: 8),
+                    GameCardFace(card: card),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (selected)
+                    Icon(Icons.check_circle, color: colors.primary),
+                  Text(
+                    '${card.color.name} • ${card.shape.name} • ${card.count}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

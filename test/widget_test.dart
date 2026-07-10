@@ -252,7 +252,8 @@ void main() {
     expect(find.byIcon(Icons.check_circle), findsOneWidget);
 
     final pile = find.text('Pile 1');
-    await tester.scrollUntilVisible(pile, -150);
+    await tester.ensureVisible(pile);
+    await tester.pumpAndSettle();
     await tester.tap(pile);
 
     expect(submittedCardId, 'card_001');
