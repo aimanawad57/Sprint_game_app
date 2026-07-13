@@ -205,6 +205,24 @@ match. Nakama validates that the sender is one of the match players, declares
 the opponent winner immediately, and uses the same `endReason: "forfeit"` as
 the automatic timeout path.
 
+## Match cleanup and termination
+
+Nakama terminates matches that no longer need to stay alive:
+
+- waiting quickplay matches and match-code lobbies expire after 5 minutes if
+  the game never starts;
+- active matches with no meaningful activity for 15 minutes become
+  `finished` with `endReason: "abandoned"`;
+- abandoned matches terminate after both players are gone;
+- normal and forfeit finished matches terminate only after result persistence
+  is no longer pending and both players are gone;
+- empty finished matches use a short 5-second grace period before termination.
+
+Match-code storage records are deleted when a code lobby expires or when the
+associated match is cleaned up. Codes remain valid while an assigned player is
+still connected so a dropped player can continue to resolve the match ID for
+reconnection.
+
 ## Match-result statistics
 
 Flutter loads the current player profile through authenticated RPC

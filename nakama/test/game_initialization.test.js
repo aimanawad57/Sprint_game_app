@@ -24,6 +24,10 @@ function loadRuntimeForTest() {
     "resolveAndBroadcastStuckState," +
     "resolveDisconnectTimeout," +
     "abandonMatch," +
+    "shouldTerminateSprintMatch," +
+    "waitingMatchTimeoutMs," +
+    "activeIdleTimeoutMs," +
+    "finishedEmptyGraceMs," +
     "persistPendingMatchResult," +
     "rpcGetOrCreateProfile," +
     "sprintMatchJoinAttempt," +
@@ -989,6 +993,120 @@ test("sprintMatchLoop handles explicit abandon opcode as forfeit", () => {
     runtime.ServerOpcode.GameEnded
   ]);
   assert.equal(calls[0].data.endReason, runtime.MatchEndReason.Forfeit);
+});
+
+test("waiting quickplay match terminates after lobby timeout", () => {
+  const state = runtime.createWaitingMatchState(["player-a", "player-b"]);
+  state.createdAtMs = Date.now() - runtime.waitingMatchTimeoutMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.equal(result, null);
+});
+
+test("active idle match becomes abandoned and broadcasts gameEnded", () => {
+  const state = createInitializedState(runtime);
+  state.lastActivityAtMs = Date.now() - runtime.activeIdleTimeoutMs - 1;
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    }
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.notEqual(result, null);
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, null);
+  assert.equal(state.endReason, runtime.MatchEndReason.Abandoned);
+  assert.equal(state.resultPersistencePending, false);
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.GameEnded,
+    runtime.ServerOpcode.GameEnded
+  ]);
+});
+
+test("abandoned empty match terminates after finished-empty grace", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = null;
+  state.endReason = runtime.MatchEndReason.Abandoned;
+  state.resultPersistencePending = false;
+  state.resultPersisted = false;
+  state.presences = {};
+  state.playerOrder.forEach((userId) => {
+    state.players[userId].connected = false;
+  });
+  state.finishedEmptySinceMs = Date.now() - runtime.finishedEmptyGraceMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.equal(result, null);
+});
+
+test("finished match waits for pending result persistence before terminating", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Normal;
+  state.startedAtMs = 1000;
+  state.endedAtMs = 2000;
+  state.resultPersistencePending = true;
+  state.resultPersisted = false;
+  state.presences = {};
+  state.playerOrder.forEach((userId) => {
+    state.players[userId].connected = false;
+  });
+  state.finishedEmptySinceMs = Date.now() - runtime.finishedEmptyGraceMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {
+    storageRead() {
+      return [];
+    },
+    multiUpdate() {
+      throw new Error("temporary storage failure");
+    },
+    storageDelete() {}
+  };
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.notEqual(result, null);
+  assert.equal(state.resultPersistencePending, true);
+  assert.equal(state.resultPersisted, false);
+});
+
+test("finished match terminates once persistence is complete and both players left", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Forfeit;
+  state.startedAtMs = 1000;
+  state.endedAtMs = 2000;
+  state.resultPersistencePending = false;
+  state.resultPersisted = true;
+  state.presences = {};
+  state.playerOrder.forEach((userId) => {
+    state.players[userId].connected = false;
+  });
+  state.finishedEmptySinceMs = Date.now() - runtime.finishedEmptyGraceMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.equal(result, null);
 });
 
 function createStuckResetState(runtime) {

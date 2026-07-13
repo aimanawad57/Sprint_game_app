@@ -2,6 +2,9 @@ const invalidMatchParametersMessage =
   "expectedUserIds must contain exactly two distinct, non-empty user IDs";
 const unauthorizedJoinMessage = "This user was not assigned to this match.";
 const disconnectTimeoutMs = 30 * 1000;
+const waitingMatchTimeoutMs = 5 * 60 * 1000;
+const activeIdleTimeoutMs = 15 * 60 * 1000;
+const finishedEmptyGraceMs = 5 * 1000;
 
 function displayNameFromPresence(presence: nkruntime.Presence): string | null {
   const username = presence.username;
@@ -77,7 +80,8 @@ function parsePlayerOrder(
 }
 
 function createWaitingMatchState(
-  playerOrder: [string, string]
+  playerOrder: [string, string],
+  nowMs: number = Date.now()
 ): SprintMatchState {
   const playerAId = playerOrder[0];
   const playerBId = playerOrder[1];
@@ -116,7 +120,10 @@ function createWaitingMatchState(
     endedAtMs: null,
     resultPersistencePending: false,
     resultPersisted: false,
-    matchCode: null
+    matchCode: null,
+    createdAtMs: nowMs,
+    lastActivityAtMs: nowMs,
+    finishedEmptySinceMs: null
   };
 }
 
@@ -125,7 +132,8 @@ function createWaitingMatchState(
 // the code and joins.
 function createOpenWaitingMatchState(
   creatorId: string,
-  code: string
+  code: string,
+  nowMs: number = Date.now()
 ): SprintMatchState {
   const players: {[userId: string]: PlayerMatchState} = {};
 
@@ -154,7 +162,10 @@ function createOpenWaitingMatchState(
     endedAtMs: null,
     resultPersistencePending: false,
     resultPersisted: false,
-    matchCode: code
+    matchCode: code,
+    createdAtMs: nowMs,
+    lastActivityAtMs: nowMs,
+    finishedEmptySinceMs: null
   };
 }
 
@@ -177,6 +188,83 @@ function invalidateMatchCode(
   ]);
   logger.info("Invalidated sprint match code %s", state.matchCode);
   state.matchCode = null;
+}
+
+function connectedPresenceCount(state: SprintMatchState): number {
+  return Object.keys(state.presences).length;
+}
+
+type MatchCleanupDecision = {
+  terminate: boolean;
+  reason: string | null;
+};
+
+function markFinishedEmptyState(
+  state: SprintMatchState,
+  nowMs: number
+): void {
+  if (
+    state.status === MatchStatus.Finished &&
+    connectedPresenceCount(state) === 0
+  ) {
+    if (state.finishedEmptySinceMs === null) {
+      state.finishedEmptySinceMs = nowMs;
+    }
+    return;
+  }
+
+  state.finishedEmptySinceMs = null;
+}
+
+function shouldTerminateSprintMatch(
+  state: SprintMatchState,
+  nowMs: number
+): MatchCleanupDecision {
+  markFinishedEmptyState(state, nowMs);
+
+  if (
+    state.status === MatchStatus.Waiting &&
+    nowMs - state.createdAtMs >= waitingMatchTimeoutMs
+  ) {
+    return {
+      terminate: true,
+      reason: "waiting match timed out"
+    };
+  }
+
+  if (
+    state.status === MatchStatus.Finished &&
+    connectedPresenceCount(state) === 0 &&
+    state.finishedEmptySinceMs !== null &&
+    nowMs - state.finishedEmptySinceMs >= finishedEmptyGraceMs
+  ) {
+    if (state.resultPersistencePending && !state.resultPersisted) {
+      return {
+        terminate: false,
+        reason: "finished match is waiting for result persistence"
+      };
+    }
+
+    return {
+      terminate: true,
+      reason: "finished match is empty"
+    };
+  }
+
+  if (
+    state.status === MatchStatus.Active &&
+    nowMs - state.lastActivityAtMs >= activeIdleTimeoutMs
+  ) {
+    return {
+      terminate: false,
+      reason: "active match idle timeout"
+    };
+  }
+
+  return {
+    terminate: false,
+    reason: null
+  };
 }
 
 function buildConnectionChangedPayload(
@@ -317,6 +405,8 @@ function finishMatchByForfeit(
   state.stateVersion += 1;
   state.resultPersistencePending = true;
   state.resultPersisted = false;
+  state.lastActivityAtMs = nowMs;
+  state.finishedEmptySinceMs = connectedPresenceCount(state) === 0 ? nowMs : null;
   return true;
 }
 
@@ -335,6 +425,8 @@ function finishMatchAsAbandoned(
   state.stateVersion += 1;
   state.resultPersistencePending = false;
   state.resultPersisted = false;
+  state.lastActivityAtMs = nowMs;
+  state.finishedEmptySinceMs = connectedPresenceCount(state) === 0 ? nowMs : null;
   return true;
 }
 
@@ -433,6 +525,8 @@ function sprintMatchInit(
   nk: nkruntime.Nakama,
   params: {[key: string]: any}
 ): {state: SprintMatchState; tickRate: number; label: string} | null {
+  const nowMs = Date.now();
+
   if (params && params.mode === "code") {
     const creatorId = params.creatorId;
     if (typeof creatorId !== "string" || creatorId.trim().length === 0) {
@@ -449,7 +543,7 @@ function sprintMatchInit(
     logger.info("Initializing open sprint match for creator: %s", creatorId);
 
     return {
-      state: createOpenWaitingMatchState(creatorId, code),
+      state: createOpenWaitingMatchState(creatorId, code, nowMs),
       tickRate: 10,
       label: JSON.stringify({mode: "sprint_by_code"})
     };
@@ -467,7 +561,7 @@ function sprintMatchInit(
   );
 
   return {
-    state: createWaitingMatchState(playerOrder),
+    state: createWaitingMatchState(playerOrder, nowMs),
     tickRate: 10,
     label: JSON.stringify({
       mode: "sprint_quickplay",
@@ -515,6 +609,7 @@ function sprintMatchJoin(
   state: SprintMatchState,
   presences: nkruntime.Presence[]
 ): {state: SprintMatchState} {
+  const nowMs = Date.now();
   const changes: ConnectionChange[] = [];
   const resyncPresences: nkruntime.Presence[] = [];
 
@@ -554,6 +649,8 @@ function sprintMatchJoin(
     state.presences[presence.userId] = presence;
     player.connected = true;
     player.disconnectedAtMs = null;
+    state.lastActivityAtMs = nowMs;
+    state.finishedEmptySinceMs = null;
     changes.push({
       userId: presence.userId,
       status: ConnectionStatus.Connected
@@ -617,6 +714,7 @@ function sprintMatchLeave(
   state: SprintMatchState,
   presences: nkruntime.Presence[]
 ): {state: SprintMatchState} {
+  const nowMs = Date.now();
   const changes: ConnectionChange[] = [];
 
   presences.forEach((presence) => {
@@ -652,8 +750,9 @@ function sprintMatchLeave(
     delete state.presences[presence.userId];
     player.connected = false;
     if (state.status === MatchStatus.Active) {
-      player.disconnectedAtMs = Date.now();
+      player.disconnectedAtMs = nowMs;
     }
+    state.lastActivityAtMs = nowMs;
     changes.push({
       userId: presence.userId,
       status: ConnectionStatus.Disconnected
@@ -673,6 +772,8 @@ function sprintMatchLeave(
     invalidateMatchCode(nk, logger, state);
   }
 
+  markFinishedEmptyState(state, nowMs);
+
   return {state: state};
 }
 
@@ -684,7 +785,9 @@ function sprintMatchLoop(
   tick: number,
   state: SprintMatchState,
   messages: nkruntime.MatchMessage[]
-): {state: SprintMatchState} {
+): {state: SprintMatchState} | null {
+  const nowMs = Date.now();
+
   if (state.resultPersistencePending && !state.resultPersisted) {
     try {
       persistPendingMatchResult(state, nk);
@@ -700,7 +803,7 @@ function sprintMatchLoop(
     }
   }
 
-  const timeoutResult = resolveDisconnectTimeout(state, Date.now());
+  const timeoutResult = resolveDisconnectTimeout(state, nowMs);
   if (timeoutResult.finished) {
     logger.info(
       "Sprint match finished by disconnect timeout with reason %s and winner %s",
@@ -712,7 +815,8 @@ function sprintMatchLoop(
 
   messages.forEach((message) => {
     if (message.opCode === ClientOpcode.AbandonMatch) {
-      if (abandonMatch(state, message.sender || null)) {
+      if (abandonMatch(state, message.sender || null, nowMs)) {
+        state.lastActivityAtMs = nowMs;
         logger.info(
           "Sprint match abandoned by player %s; winner %s",
           message.sender?.userId || "unknown",
@@ -748,6 +852,7 @@ function sprintMatchLoop(
       result.playerId,
       state.stateVersion
     );
+    state.lastActivityAtMs = nowMs;
 
     sendPlayerStateViews(
       dispatcher,
@@ -759,6 +864,30 @@ function sprintMatchLoop(
       resolveAndBroadcastStuckState(dispatcher, state, logger);
     }
   });
+
+  const cleanupDecision = shouldTerminateSprintMatch(state, nowMs);
+  if (
+    cleanupDecision.reason === "active match idle timeout" &&
+    finishMatchAsAbandoned(state, nowMs)
+  ) {
+    logger.info(
+      "Sprint match abandoned after idle timeout at version %d",
+      state.stateVersion
+    );
+    sendPlayerStateViews(dispatcher, state, ServerOpcode.GameEnded);
+  }
+
+  const finalCleanupDecision = shouldTerminateSprintMatch(state, nowMs);
+  if (finalCleanupDecision.terminate) {
+    invalidateMatchCode(nk, logger, state);
+    logger.info(
+      "Terminating sprint match: %s, status %s, connected players %d",
+      finalCleanupDecision.reason || "cleanup",
+      state.status,
+      connectedPresenceCount(state)
+    );
+    return null;
+  }
 
   return {state: state};
 }
@@ -772,6 +901,7 @@ function sprintMatchTerminate(
   state: SprintMatchState,
   graceSeconds: number
 ): {state: SprintMatchState} {
+  invalidateMatchCode(nk, logger, state);
   return {state: state};
 }
 
