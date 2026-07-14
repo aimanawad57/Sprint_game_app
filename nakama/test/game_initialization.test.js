@@ -20,6 +20,7 @@ function loadRuntimeForTest() {
     "hasAnyLegalMove," +
     "isGameStuck," +
     "reshuffleCenterPiles," +
+    "replaceSingleCardPilesFromPlayerDecks," +
     "resolveStuckState," +
     "resolveAndBroadcastStuckState," +
     "resolveDisconnectTimeout," +
@@ -1192,10 +1193,112 @@ test("one multi-card pile resets while the single-card pile stays unchanged", ()
   assert.equal(runtime.isGameStuck(state), false);
 });
 
-test("two single-card center piles defer reset without touching player decks", () => {
+test("two single-card center piles swap with player decks without changing deck counts", () => {
   const state = createStuckResetState(runtime);
   state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
   state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_top", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2),
+    card("deck_a_keep", runtime.CardColor.Purple, runtime.CardShape.House, 6)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
+  const handsBefore = normalize(state.playerOrder.map((id) => state.players[id].hand));
+  const deckCountsBefore = state.playerOrder.map((id) => state.players[id].deck.length);
+  const oldPile1Card = state.centerPiles.pile_1[0];
+  const oldPile2Card = state.centerPiles.pile_2[0];
+
+  assert.equal(runtime.replaceSingleCardPilesFromPlayerDecks(state, () => 0), true);
+
+  assert.equal(state.stateVersion, 8);
+  assert.equal(state.centerPiles.pile_1[0].card_id, "deck_a_top");
+  assert.equal(state.centerPiles.pile_2[0].card_id, "deck_b_top");
+  assert.deepEqual(
+    state.playerOrder.map((id) => state.players[id].deck.length),
+    deckCountsBefore
+  );
+  assert.deepEqual(normalize(state.playerOrder.map((id) => state.players[id].hand)), handsBefore);
+  assert.equal(state.players["player-a"].deck[0].card_id, "deck_a_keep");
+  assert.equal(state.players["player-b"].deck[0].card_id, "deck_b_keep");
+  assert.equal(state.players["player-a"].deck[1].card_id, oldPile1Card.card_id);
+  assert.equal(state.players["player-b"].deck[1].card_id, oldPile2Card.card_id);
+  assert.deepEqual(
+    [
+      state.centerPiles.pile_1[0].card_id,
+      state.centerPiles.pile_2[0].card_id,
+      ...state.players["player-a"].deck.map((entry) => entry.card_id),
+      ...state.players["player-b"].deck.map((entry) => entry.card_id)
+    ].sort(),
+    [
+      "deck_a_top",
+      "deck_a_keep",
+      oldPile1Card.card_id,
+      "deck_b_top",
+      "deck_b_keep",
+      oldPile2Card.card_id
+    ].sort()
+  );
+});
+
+test("single-card pile replacement is blocked safely when a player deck is too short", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_only", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
+  const before = normalize(state);
+
+  assert.equal(runtime.replaceSingleCardPilesFromPlayerDecks(state, () => 0), false);
+  assert.deepEqual(normalize(state), before);
+});
+
+test("stuck resolution uses single-card pile replacement and broadcasts reset", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_top", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2),
+    card("deck_a_keep", runtime.CardColor.Purple, runtime.CardShape.House, 6)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
+  const observedVersions = [];
+
+  const result = runtime.resolveStuckState(
+    state,
+    (current) => observedVersions.push(current.stateVersion),
+    () => 0,
+    4
+  );
+
+  assert.deepEqual(observedVersions, [8]);
+  assert.equal(result.resetCount, 1);
+  assert.equal(result.stillStuck, false);
+  assert.equal(result.blockedBySingleCardPiles, false);
+  assert.equal(state.centerPiles.pile_1[0].card_id, "deck_a_top");
+  assert.equal(state.centerPiles.pile_2[0].card_id, "deck_b_top");
+});
+
+test("stuck resolution reports blocked when single-card replacement cannot run safely", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_only", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
   const before = normalize(state);
   let observerCalls = 0;
 

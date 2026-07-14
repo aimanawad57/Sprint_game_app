@@ -158,13 +158,20 @@ After every accepted non-winning move, Nakama checks both players' current
 hands against both center-pile top cards. If no legal move exists, every center
 pile with more than one card is shuffled independently; a one-card pile remains
 unchanged while the other pile can still be shuffled. Cards never move between
-the two piles. Player hands and private decks are unchanged.
+the two piles during normal pile reshuffles. Player hands and private decks are
+unchanged for this normal reset path.
+
+If both center piles contain exactly one card and no legal move exists, Nakama
+uses the player decks to replace those pile tops while preserving deck counts.
+The first card from Player A's deck becomes the new `pile_1` top card, and the
+old `pile_1` card is inserted back into Player A's deck at a non-front
+position. The same rule applies to Player B's deck and `pile_2`. This special
+replacement only runs when both players have enough deck cards to avoid putting
+the old pile card back as the next draw.
 
 Each reset increments `stateVersion`, sends a private opcode `13` player view,
 and is checked again. Reset attempts are bounded to prevent an infinite loop.
-Flutter handles opcode `13` as an authoritative state replacement. Reset is
-deferred without changing player decks only when both center piles contain one
-card; that edge case is intentionally reserved for a later rule decision.
+Flutter handles opcode `13` as an authoritative state replacement.
 
 ## State-version policy
 

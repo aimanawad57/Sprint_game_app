@@ -509,7 +509,7 @@ function resolveAndBroadcastStuckState(
 
   if (result.blockedBySingleCardPiles) {
     logger.warn(
-      "Sprint match is stuck but both center piles contain only one card; reset deferred"
+      "Sprint match is stuck but single-card pile replacement could not run safely"
     );
   } else if (result.stillStuck) {
     logger.warn(
