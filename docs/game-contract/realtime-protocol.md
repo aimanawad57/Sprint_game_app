@@ -147,6 +147,18 @@ Opcode `12` (`moveRejected`) is implemented on both Nakama and Flutter. A
 rejection leaves the current game snapshot unchanged and displays the stable
 reason as user-facing feedback.
 
+Nakama does not apply a valid submitted move immediately. It first validates the
+move against the current authoritative state, queues the valid candidate, and
+waits a 150ms fairness window from the first queued move. Obvious invalid moves
+are still rejected immediately.
+
+When the fairness window is processed, Nakama revalidates all ready candidates.
+If two ready valid moves target different center piles, both moves can be
+applied in the same authoritative update. If two ready valid moves target the
+same center pile, only one can win that pile. The server uses an alternating
+tie-break priority between the two players; the losing same-pile candidate is
+rejected as `stale_move`.
+
 Nakama rejects a submitted move with `player_disconnected` unless both
 canonical players have an active match presence. This server-side rule is
 authoritative; Flutter also disables move controls while opcode `15` reports
@@ -172,11 +184,18 @@ card; that edge case is intentionally reserved for a later rule decision.
 2. Rejected moves do not increment it.
 3. The client submits the version it was viewing.
 4. A version mismatch does not automatically reject the move.
-5. The server validates the card against the current target-pile top.
-6. If the move remains legal, the server accepts it.
-7. If the changed state makes the move illegal, the server rejects it.
+5. The server validates the card against the current target-pile top before
+   queueing it.
+6. Valid candidates wait in the 150ms fairness window.
+7. When the window is processed, the server revalidates each ready candidate
+   against the current target-pile top.
+8. A batch of one or more accepted moves increments `stateVersion` once.
+9. If the changed state makes a queued candidate illegal, the server rejects it.
 
 This permits a valid move when an opponent changed only the other center pile.
+It also lets two players who reacted to the same visible state compete fairly
+inside the short server-side window instead of making raw network arrival order
+the only deciding factor.
 
 Presence-only changes do not increment `stateVersion`. Connecting or
 disconnecting does not move cards and must not make a submitted gameplay move

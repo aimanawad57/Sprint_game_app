@@ -166,6 +166,9 @@ function initializeGameState(
   state.endedAtMs = null;
   state.resultPersistencePending = false;
   state.resultPersisted = false;
+  state.pendingMoves = [];
+  state.nextPendingMoveSequence = 0;
+  state.nextTieBreakerPlayerId = state.playerOrder[0];
 
   assertInitializedCardState(state);
   return true;

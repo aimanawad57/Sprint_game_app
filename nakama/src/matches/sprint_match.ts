@@ -2,6 +2,7 @@ const invalidMatchParametersMessage =
   "expectedUserIds must contain exactly two distinct, non-empty user IDs";
 const unauthorizedJoinMessage = "This user was not assigned to this match.";
 const disconnectTimeoutMs = 30 * 1000;
+const moveFairnessWindowMs = 150;
 
 function displayNameFromPresence(presence: nkruntime.Presence): string | null {
   const username = presence.username;
@@ -116,7 +117,10 @@ function createWaitingMatchState(
     endedAtMs: null,
     resultPersistencePending: false,
     resultPersisted: false,
-    matchCode: null
+    matchCode: null,
+    pendingMoves: [],
+    nextPendingMoveSequence: 0,
+    nextTieBreakerPlayerId: playerAId
   };
 }
 
@@ -154,7 +158,10 @@ function createOpenWaitingMatchState(
     endedAtMs: null,
     resultPersistencePending: false,
     resultPersisted: false,
-    matchCode: code
+    matchCode: code,
+    pendingMoves: [],
+    nextPendingMoveSequence: 0,
+    nextTieBreakerPlayerId: creatorId
   };
 }
 
@@ -274,6 +281,58 @@ function sendMoveRejected(
   );
 }
 
+function enqueuePendingSubmitMove(
+  state: SprintMatchState,
+  move: ValidatedSubmitMove
+): ApplyMoveResult | null {
+  const existingMove = state.pendingMoves.find(
+    (pendingMove) => pendingMove.playerId === move.playerId
+  );
+  if (existingMove) {
+    return rejectMove(
+      state,
+      move.playerId,
+      MoveRejectionReason.StaleMove,
+      move.payload
+    );
+  }
+
+  state.pendingMoves.push(move);
+  return null;
+}
+
+function collectReadyPendingSubmitMoves(
+  state: SprintMatchState,
+  nowMs: number,
+  fairnessWindowMs: number = moveFairnessWindowMs
+): ValidatedSubmitMove[] {
+  if (state.pendingMoves.length === 0) {
+    return [];
+  }
+
+  const earliestReceivedAtMs = state.pendingMoves.reduce(
+    (earliest, move) => Math.min(earliest, move.receivedAtMs),
+    state.pendingMoves[0].receivedAtMs
+  );
+  const batchDeadlineMs = earliestReceivedAtMs + fairnessWindowMs;
+  if (nowMs < batchDeadlineMs) {
+    return [];
+  }
+
+  const readyMoves: ValidatedSubmitMove[] = [];
+  const waitingMoves: ValidatedSubmitMove[] = [];
+  state.pendingMoves.forEach((move) => {
+    if (move.receivedAtMs <= batchDeadlineMs) {
+      readyMoves.push(move);
+    } else {
+      waitingMoves.push(move);
+    }
+  });
+  state.pendingMoves = waitingMoves;
+
+  return readyMoves.sort((left, right) => left.sequence - right.sequence);
+}
+
 function sendPlayerStateView(
   dispatcher: nkruntime.MatchDispatcher,
   state: SprintMatchState,
@@ -317,6 +376,7 @@ function finishMatchByForfeit(
   state.stateVersion += 1;
   state.resultPersistencePending = true;
   state.resultPersisted = false;
+  state.pendingMoves = [];
   return true;
 }
 
@@ -335,6 +395,7 @@ function finishMatchAsAbandoned(
   state.stateVersion += 1;
   state.resultPersistencePending = false;
   state.resultPersisted = false;
+  state.pendingMoves = [];
   return true;
 }
 
@@ -685,6 +746,8 @@ function sprintMatchLoop(
   state: SprintMatchState,
   messages: nkruntime.MatchMessage[]
 ): {state: SprintMatchState} {
+  const nowMs = Date.now();
+
   if (state.resultPersistencePending && !state.resultPersisted) {
     try {
       persistPendingMatchResult(state, nk);
@@ -700,7 +763,7 @@ function sprintMatchLoop(
     }
   }
 
-  const timeoutResult = resolveDisconnectTimeout(state, Date.now());
+  const timeoutResult = resolveDisconnectTimeout(state, nowMs);
   if (timeoutResult.finished) {
     logger.info(
       "Sprint match finished by disconnect timeout with reason %s and winner %s",
@@ -712,7 +775,7 @@ function sprintMatchLoop(
 
   messages.forEach((message) => {
     if (message.opCode === ClientOpcode.AbandonMatch) {
-      if (abandonMatch(state, message.sender || null)) {
+      if (abandonMatch(state, message.sender || null, nowMs)) {
         logger.info(
           "Sprint match abandoned by player %s; winner %s",
           message.sender?.userId || "unknown",
@@ -727,38 +790,74 @@ function sprintMatchLoop(
       return;
     }
 
-    const result = applySubmitMove(state, message.sender || null, message.data);
-    if (!result.accepted) {
-      const rejectedResult = result as {
-        accepted: false;
-        playerId: string | null;
-        rejection: MoveRejectedPayload;
-      };
+    const sequence = state.nextPendingMoveSequence;
+    state.nextPendingMoveSequence += 1;
+    const result = validateSubmitMoveCandidate(
+      state,
+      message.sender || null,
+      message.data,
+      nowMs,
+      sequence
+    );
+    if (result.accepted === false) {
       logger.info(
         "Rejected sprint move from user %s: %s",
-        rejectedResult.playerId || "unknown",
-        rejectedResult.rejection.reason
+        result.playerId || "unknown",
+        result.rejection.reason
       );
-      sendMoveRejected(dispatcher, state, rejectedResult);
+      sendMoveRejected(dispatcher, state, result);
+      return;
+    }
+
+    const enqueueFailure = enqueuePendingSubmitMove(state, result.move);
+    if (enqueueFailure) {
+      logger.info(
+        "Rejected duplicate pending sprint move from user %s",
+        result.move.playerId
+      );
+      sendMoveRejected(dispatcher, state, enqueueFailure);
       return;
     }
 
     logger.info(
-      "Accepted sprint move from user %s at version %d",
-      result.playerId,
-      state.stateVersion
+      "Queued sprint move from user %s at version %d",
+      result.move.playerId,
+      result.move.payload.expectedStateVersion
     );
+  });
 
-    sendPlayerStateViews(
-      dispatcher,
-      state,
-      result.gameEnded ? ServerOpcode.GameEnded : ServerOpcode.StateUpdate
-    );
+  const readyMoves = collectReadyPendingSubmitMoves(state, Date.now());
+  if (readyMoves.length > 0) {
+    const batchResult = applyPendingSubmitMoveBatch(state, readyMoves, Date.now());
 
-    if (!result.gameEnded) {
+    batchResult.rejections.forEach((rejection) => {
+      if (!rejection.accepted) {
+        logger.info(
+          "Rejected pending sprint move from user %s: %s",
+          rejection.playerId || "unknown",
+          rejection.rejection.reason
+        );
+        sendMoveRejected(dispatcher, state, rejection);
+      }
+    });
+
+    if (batchResult.changed) {
+      logger.info(
+        "Accepted %d sprint move(s) at version %d",
+        batchResult.acceptedPlayerIds.length,
+        state.stateVersion
+      );
+      sendPlayerStateViews(
+        dispatcher,
+        state,
+        batchResult.gameEnded ? ServerOpcode.GameEnded : ServerOpcode.StateUpdate
+      );
+    }
+
+    if (batchResult.changed && !batchResult.gameEnded) {
       resolveAndBroadcastStuckState(dispatcher, state, logger);
     }
-  });
+  }
 
   return {state: state};
 }
