@@ -51,25 +51,87 @@ class GameCardFace extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final iconSize = switch (card.count) {
-      1 => 40.0,
-      2 || 3 => 30.0,
-      4 => 22.0,
-      _ => 20.0,
-    };
     final color = gameCardColorValue(card.color);
+    final positions = _symbolPositions(card.count);
+    final iconSize = switch (card.count) {
+      1 => maxWidth * 0.34,
+      2 => maxWidth * 0.29,
+      3 => maxWidth * 0.28,
+      4 => maxWidth * 0.25,
+      _ => maxWidth * 0.23,
+    };
 
     return SizedBox(
       width: maxWidth,
-      child: Wrap(
-        alignment: WrapAlignment.center,
-        spacing: 4,
-        runSpacing: 4,
+      height: maxWidth * 1.18,
+      child: Stack(
         children: [
-          for (var i = 0; i < card.count; i++)
-            GameCardShapeIcon(shape: card.shape, color: color, size: iconSize),
+          for (var i = 0; i < positions.length; i++)
+            Align(
+              alignment: positions[i],
+              child: _RaisedShapeIcon(
+                shape: card.shape,
+                color: color,
+                size: iconSize,
+              ),
+            ),
         ],
       ),
+    );
+  }
+
+  List<Alignment> _symbolPositions(int count) {
+    return switch (count) {
+      1 => const [Alignment.center],
+      2 => const [Alignment(-0.42, -0.55), Alignment(0.42, 0.55)],
+      3 => const [
+        Alignment(0, -0.62),
+        Alignment(-0.48, 0.46),
+        Alignment(0.48, 0.46),
+      ],
+      4 => const [
+        Alignment(-0.48, -0.54),
+        Alignment(0.48, -0.54),
+        Alignment(-0.48, 0.54),
+        Alignment(0.48, 0.54),
+      ],
+      _ => const [
+        Alignment(-0.48, -0.62),
+        Alignment(0.48, -0.62),
+        Alignment.center,
+        Alignment(-0.48, 0.62),
+        Alignment(0.48, 0.62),
+      ],
+    };
+  }
+}
+
+class _RaisedShapeIcon extends StatelessWidget {
+  const _RaisedShapeIcon({
+    required this.shape,
+    required this.color,
+    required this.size,
+  });
+
+  final GameCardShape shape;
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Transform.translate(
+          offset: const Offset(0, 2),
+          child: GameCardShapeIcon(
+            shape: shape,
+            color: Colors.black.withValues(alpha: 0.18),
+            size: size,
+          ),
+        ),
+        GameCardShapeIcon(shape: shape, color: color, size: size),
+      ],
     );
   }
 }
