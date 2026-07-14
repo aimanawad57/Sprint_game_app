@@ -50,6 +50,20 @@ function shuffledPile(cards: Card[], random: RandomSource): Card[] {
   return shuffled;
 }
 
+function randomInsertIndexAfterDeckFront(
+  deckLength: number,
+  random: RandomSource
+): number {
+  const randomValue = random();
+  if (!Number.isFinite(randomValue) || randomValue < 0 || randomValue >= 1) {
+    throw new Error(
+      "Random source must return a finite value from 0 inclusive to 1 exclusive."
+    );
+  }
+
+  return 1 + Math.floor(randomValue * deckLength);
+}
+
 function reshuffleCenterPiles(
   state: SprintMatchState,
   random: RandomSource = Math.random
@@ -74,6 +88,52 @@ function reshuffleCenterPiles(
   return true;
 }
 
+function replaceSingleCardPilesFromPlayerDecks(
+  state: SprintMatchState,
+  random: RandomSource = Math.random
+): boolean {
+  if (!isGameStuck(state)) {
+    return false;
+  }
+
+  if (
+    state.centerPiles.pile_1.length !== 1 ||
+    state.centerPiles.pile_2.length !== 1
+  ) {
+    return false;
+  }
+
+  const playerA = state.players[state.playerOrder[0]];
+  const playerB = state.players[state.playerOrder[1]];
+  if (!playerA || !playerB || playerA.deck.length < 2 || playerB.deck.length < 2) {
+    return false;
+  }
+
+  const pile1OldTop = state.centerPiles.pile_1[0];
+  const pile2OldTop = state.centerPiles.pile_2[0];
+  const playerANewPileTop = playerA.deck[0];
+  const playerBNewPileTop = playerB.deck[0];
+  const playerADeckAfterDraw = playerA.deck.slice(1);
+  const playerBDeckAfterDraw = playerB.deck.slice(1);
+  const playerAInsertIndex = randomInsertIndexAfterDeckFront(
+    playerADeckAfterDraw.length,
+    random
+  );
+  const playerBInsertIndex = randomInsertIndexAfterDeckFront(
+    playerBDeckAfterDraw.length,
+    random
+  );
+
+  playerADeckAfterDraw.splice(playerAInsertIndex, 0, pile1OldTop);
+  playerBDeckAfterDraw.splice(playerBInsertIndex, 0, pile2OldTop);
+  playerA.deck = playerADeckAfterDraw;
+  playerB.deck = playerBDeckAfterDraw;
+  state.centerPiles.pile_1 = [playerANewPileTop];
+  state.centerPiles.pile_2 = [playerBNewPileTop];
+  state.stateVersion += 1;
+  return true;
+}
+
 function resolveStuckState(
   state: SprintMatchState,
   onReset: StuckResetObserver,
@@ -86,7 +146,10 @@ function resolveStuckState(
 
   let resetCount = 0;
   while (isGameStuck(state) && resetCount < maxAttempts) {
-    if (!reshuffleCenterPiles(state, random)) {
+    if (
+      !reshuffleCenterPiles(state, random) &&
+      !replaceSingleCardPilesFromPlayerDecks(state, random)
+    ) {
       return {
         resetCount: resetCount,
         stillStuck: true,

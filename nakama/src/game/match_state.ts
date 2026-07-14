@@ -41,4 +41,7 @@ type SprintMatchState = {
   pendingMoves: ValidatedSubmitMove[];
   nextPendingMoveSequence: number;
   nextTieBreakerPlayerId: string | null;
+  createdAtMs: number;
+  lastActivityAtMs: number;
+  finishedEmptySinceMs: number | null;
 };

@@ -20,6 +20,7 @@ function loadRuntimeForTest() {
     "hasAnyLegalMove," +
     "isGameStuck," +
     "reshuffleCenterPiles," +
+    "replaceSingleCardPilesFromPlayerDecks," +
     "resolveStuckState," +
     "resolveAndBroadcastStuckState," +
     "resolveDisconnectTimeout," +
@@ -28,6 +29,10 @@ function loadRuntimeForTest() {
     "validateSubmitMoveCandidate," +
     "collectReadyPendingSubmitMoves," +
     "applyPendingSubmitMoveBatch," +
+    "shouldTerminateSprintMatch," +
+    "waitingMatchTimeoutMs," +
+    "activeIdleTimeoutMs," +
+    "finishedEmptyGraceMs," +
     "persistPendingMatchResult," +
     "rpcGetOrCreateProfile," +
     "sprintMatchJoinAttempt," +
@@ -1385,6 +1390,120 @@ test("sprintMatchLoop handles explicit abandon opcode as forfeit", () => {
   assert.equal(calls[0].data.endReason, runtime.MatchEndReason.Forfeit);
 });
 
+test("waiting quickplay match terminates after lobby timeout", () => {
+  const state = runtime.createWaitingMatchState(["player-a", "player-b"]);
+  state.createdAtMs = Date.now() - runtime.waitingMatchTimeoutMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.equal(result, null);
+});
+
+test("active idle match becomes abandoned and broadcasts gameEnded", () => {
+  const state = createInitializedState(runtime);
+  state.lastActivityAtMs = Date.now() - runtime.activeIdleTimeoutMs - 1;
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    }
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.notEqual(result, null);
+  assert.equal(state.status, runtime.MatchStatus.Finished);
+  assert.equal(state.winnerId, null);
+  assert.equal(state.endReason, runtime.MatchEndReason.Abandoned);
+  assert.equal(state.resultPersistencePending, false);
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.GameEnded,
+    runtime.ServerOpcode.GameEnded
+  ]);
+});
+
+test("abandoned empty match terminates after finished-empty grace", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = null;
+  state.endReason = runtime.MatchEndReason.Abandoned;
+  state.resultPersistencePending = false;
+  state.resultPersisted = false;
+  state.presences = {};
+  state.playerOrder.forEach((userId) => {
+    state.players[userId].connected = false;
+  });
+  state.finishedEmptySinceMs = Date.now() - runtime.finishedEmptyGraceMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.equal(result, null);
+});
+
+test("finished match waits for pending result persistence before terminating", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Normal;
+  state.startedAtMs = 1000;
+  state.endedAtMs = 2000;
+  state.resultPersistencePending = true;
+  state.resultPersisted = false;
+  state.presences = {};
+  state.playerOrder.forEach((userId) => {
+    state.players[userId].connected = false;
+  });
+  state.finishedEmptySinceMs = Date.now() - runtime.finishedEmptyGraceMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {
+    storageRead() {
+      return [];
+    },
+    multiUpdate() {
+      throw new Error("temporary storage failure");
+    },
+    storageDelete() {}
+  };
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.notEqual(result, null);
+  assert.equal(state.resultPersistencePending, true);
+  assert.equal(state.resultPersisted, false);
+});
+
+test("finished match terminates once persistence is complete and both players left", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Forfeit;
+  state.startedAtMs = 1000;
+  state.endedAtMs = 2000;
+  state.resultPersistencePending = false;
+  state.resultPersisted = true;
+  state.presences = {};
+  state.playerOrder.forEach((userId) => {
+    state.players[userId].connected = false;
+  });
+  state.finishedEmptySinceMs = Date.now() - runtime.finishedEmptyGraceMs - 1;
+  const dispatcher = {broadcastMessage() {}};
+  const logger = {info() {}, warn() {}, error() {}};
+  const nk = {storageDelete() {}};
+
+  const result = runtime.sprintMatchLoop(null, logger, nk, dispatcher, 1, state, []);
+
+  assert.equal(result, null);
+});
+
 function createStuckResetState(runtime) {
   const state = createInitializedState(runtime);
   state.stateVersion = 7;
@@ -1468,10 +1587,112 @@ test("one multi-card pile resets while the single-card pile stays unchanged", ()
   assert.equal(runtime.isGameStuck(state), false);
 });
 
-test("two single-card center piles defer reset without touching player decks", () => {
+test("two single-card center piles swap with player decks without changing deck counts", () => {
   const state = createStuckResetState(runtime);
   state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
   state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_top", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2),
+    card("deck_a_keep", runtime.CardColor.Purple, runtime.CardShape.House, 6)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
+  const handsBefore = normalize(state.playerOrder.map((id) => state.players[id].hand));
+  const deckCountsBefore = state.playerOrder.map((id) => state.players[id].deck.length);
+  const oldPile1Card = state.centerPiles.pile_1[0];
+  const oldPile2Card = state.centerPiles.pile_2[0];
+
+  assert.equal(runtime.replaceSingleCardPilesFromPlayerDecks(state, () => 0), true);
+
+  assert.equal(state.stateVersion, 8);
+  assert.equal(state.centerPiles.pile_1[0].card_id, "deck_a_top");
+  assert.equal(state.centerPiles.pile_2[0].card_id, "deck_b_top");
+  assert.deepEqual(
+    state.playerOrder.map((id) => state.players[id].deck.length),
+    deckCountsBefore
+  );
+  assert.deepEqual(normalize(state.playerOrder.map((id) => state.players[id].hand)), handsBefore);
+  assert.equal(state.players["player-a"].deck[0].card_id, "deck_a_keep");
+  assert.equal(state.players["player-b"].deck[0].card_id, "deck_b_keep");
+  assert.equal(state.players["player-a"].deck[1].card_id, oldPile1Card.card_id);
+  assert.equal(state.players["player-b"].deck[1].card_id, oldPile2Card.card_id);
+  assert.deepEqual(
+    [
+      state.centerPiles.pile_1[0].card_id,
+      state.centerPiles.pile_2[0].card_id,
+      ...state.players["player-a"].deck.map((entry) => entry.card_id),
+      ...state.players["player-b"].deck.map((entry) => entry.card_id)
+    ].sort(),
+    [
+      "deck_a_top",
+      "deck_a_keep",
+      oldPile1Card.card_id,
+      "deck_b_top",
+      "deck_b_keep",
+      oldPile2Card.card_id
+    ].sort()
+  );
+});
+
+test("single-card pile replacement is blocked safely when a player deck is too short", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_only", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
+  const before = normalize(state);
+
+  assert.equal(runtime.replaceSingleCardPilesFromPlayerDecks(state, () => 0), false);
+  assert.deepEqual(normalize(state), before);
+});
+
+test("stuck resolution uses single-card pile replacement and broadcasts reset", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_top", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2),
+    card("deck_a_keep", runtime.CardColor.Purple, runtime.CardShape.House, 6)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
+  const observedVersions = [];
+
+  const result = runtime.resolveStuckState(
+    state,
+    (current) => observedVersions.push(current.stateVersion),
+    () => 0,
+    4
+  );
+
+  assert.deepEqual(observedVersions, [8]);
+  assert.equal(result.resetCount, 1);
+  assert.equal(result.stillStuck, false);
+  assert.equal(result.blockedBySingleCardPiles, false);
+  assert.equal(state.centerPiles.pile_1[0].card_id, "deck_a_top");
+  assert.equal(state.centerPiles.pile_2[0].card_id, "deck_b_top");
+});
+
+test("stuck resolution reports blocked when single-card replacement cannot run safely", () => {
+  const state = createStuckResetState(runtime);
+  state.centerPiles.pile_1 = [state.centerPiles.pile_1.at(-1)];
+  state.centerPiles.pile_2 = [state.centerPiles.pile_2.at(-1)];
+  state.players["player-a"].deck = [
+    card("deck_a_only", runtime.CardColor.Blue, runtime.CardShape.Diamond, 2)
+  ];
+  state.players["player-b"].deck = [
+    card("deck_b_top", runtime.CardColor.Green, runtime.CardShape.Circle, 4),
+    card("deck_b_keep", runtime.CardColor.Orange, runtime.CardShape.Flag, 6)
+  ];
   const before = normalize(state);
   let observerCalls = 0;
 

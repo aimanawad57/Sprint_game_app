@@ -19,9 +19,11 @@ function loadRuntimeForTest() {
     "normalizeMatchCode," +
     "createOpenWaitingMatchState," +
     "initializeGameState," +
+    "waitingMatchTimeoutMs," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
     "sprintMatchLeave," +
+    "sprintMatchLoop," +
     "MatchStatus" +
     "};";
   const context = {};
@@ -43,7 +45,7 @@ const dispatcher = {
 };
 
 const runtime = loadRuntimeForTest();
-const logger = {info: () => {}, warn: () => {}};
+const logger = {info: () => {}, warn: () => {}, error: () => {}};
 const TEST_CODE = "ABCDEF";
 
 function fakeNk() {
@@ -143,6 +145,23 @@ test("the match code is invalidated if the creator leaves before anyone redeems 
   assert.equal(nk.deletedKeys.length, 0);
 
   runtime.sprintMatchLeave({}, logger, nk, dispatcher, 0, state, [presence("creator-1")]);
+  assert.equal(nk.deletedKeys.length, 1);
+  assert.deepEqual(normalize(nk.deletedKeys[0]), {
+    collection: runtime.MATCH_CODE_COLLECTION,
+    key: TEST_CODE,
+    userId: runtime.SYSTEM_USER_ID
+  });
+  assert.equal(state.matchCode, null);
+});
+
+test("a match-code lobby timeout invalidates the code and terminates", () => {
+  const state = runtime.createOpenWaitingMatchState("creator-1", TEST_CODE);
+  const nk = fakeNk();
+  state.createdAtMs = Date.now() - runtime.waitingMatchTimeoutMs - 1;
+
+  const result = runtime.sprintMatchLoop({}, logger, nk, dispatcher, 0, state, []);
+
+  assert.equal(result, null);
   assert.equal(nk.deletedKeys.length, 1);
   assert.deepEqual(normalize(nk.deletedKeys[0]), {
     collection: runtime.MATCH_CODE_COLLECTION,
