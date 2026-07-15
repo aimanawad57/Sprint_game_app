@@ -2,6 +2,7 @@ type SubmitMovePayload = {
   card_id: string;
   targetPileId: PileId;
   expectedStateVersion: number;
+  reactionTimeMs: number | null;
 };
 
 type MoveRejectedPayload = {
@@ -30,6 +31,12 @@ type ValidatedSubmitMove = {
   payload: SubmitMovePayload;
   receivedAtMs: number;
   sequence: number;
+  // When the player actually reacted, reconstructed on the server's clock.
+  // Contested piles are resolved by this instead of raw arrival order.
+  effectiveResponseTimeMs: number;
+  // Network round-trip (ms) derived from this move, or null when it can't be
+  // measured (no broadcast anchor, no reaction time, or stale version).
+  networkRttEstimateMs: number | null;
 };
 
 type ValidateSubmitMoveResult =
@@ -117,7 +124,54 @@ function parseSubmitMovePayload(
   return {
     card_id: cardId,
     targetPileId: targetPileId,
-    expectedStateVersion: expectedStateVersion
+    expectedStateVersion: expectedStateVersion,
+    reactionTimeMs: sanitizeReactionTimeMs(decoded.reactionTimeMs)
+  };
+}
+
+// The client-reported reaction time is advisory fairness metadata, so a
+// missing or malformed value degrades to "no compensation" instead of
+// rejecting an otherwise valid move (this also keeps older clients working).
+function sanitizeReactionTimeMs(value: any): number | null {
+  if (typeof value !== "number" || !isFinite(value) || value < 0) {
+    return null;
+  }
+
+  return Math.floor(value);
+}
+
+type MoveTiming = {
+  effectiveResponseTimeMs: number;
+  networkRttEstimateMs: number | null;
+};
+
+// Reconstructs when the player actually reacted, on the server's clock: the
+// broadcast instant plus the client-measured reaction time. The reaction
+// claim is clamped to the server-observed elapsed time since the broadcast
+// (network transit cannot be negative), so a claim cannot place the move
+// before physics allows. It also yields a network round-trip estimate
+// (elapsed minus reaction) for adaptive window sizing. Compensation only
+// applies when the move responds to the current state version; otherwise the
+// reaction was measured from an older broadcast and arrival time is used.
+function resolveMoveTiming(
+  state: SprintMatchState,
+  payload: SubmitMovePayload,
+  receivedAtMs: number
+): MoveTiming {
+  const broadcastAtMs = state.lastBroadcastAtMs;
+  if (
+    broadcastAtMs === null ||
+    payload.reactionTimeMs === null ||
+    payload.expectedStateVersion !== state.stateVersion
+  ) {
+    return {effectiveResponseTimeMs: receivedAtMs, networkRttEstimateMs: null};
+  }
+
+  const elapsedMs = Math.max(0, receivedAtMs - broadcastAtMs);
+  const clampedReactionMs = Math.min(payload.reactionTimeMs, elapsedMs);
+  return {
+    effectiveResponseTimeMs: broadcastAtMs + clampedReactionMs,
+    networkRttEstimateMs: Math.max(0, elapsedMs - clampedReactionMs)
   };
 }
 
@@ -322,13 +376,16 @@ function validateSubmitMovePayload(
     );
   }
 
+  const timing = resolveMoveTiming(state, payload, receivedAtMs);
   return {
     accepted: true,
     move: {
       playerId: player.userId,
       payload: payload,
       receivedAtMs: receivedAtMs,
-      sequence: sequence
+      sequence: sequence,
+      effectiveResponseTimeMs: timing.effectiveResponseTimeMs,
+      networkRttEstimateMs: timing.networkRttEstimateMs
     }
   };
 }
@@ -453,6 +510,44 @@ function advanceTieBreaker(state: SprintMatchState, winnerId: string): void {
   state.nextTieBreakerPlayerId = otherPlayerId(state, winnerId);
 }
 
+// Orders moves by reaction-adjusted response time (earliest reactor first),
+// falling back to arrival sequence only on an exact time tie. This replaces
+// raw arrival order so a faster reactor is not beaten by a faster network.
+function compareByEffectiveResponseTime(
+  left: ValidatedSubmitMove,
+  right: ValidatedSubmitMove
+): number {
+  if (left.effectiveResponseTimeMs !== right.effectiveResponseTimeMs) {
+    return left.effectiveResponseTimeMs - right.effectiveResponseTimeMs;
+  }
+  return left.sequence - right.sequence;
+}
+
+// Resolves a contested pile by reaction-adjusted response time. The
+// alternating tie-breaker only decides (and advances) when two moves have an
+// exactly equal effective time, which the network-independent measurement
+// makes rare.
+function chooseContestedPileWinner(
+  state: SprintMatchState,
+  moves: ValidatedSubmitMove[]
+): ValidatedSubmitMove {
+  let fastestTimeMs = moves[0].effectiveResponseTimeMs;
+  moves.forEach((move) => {
+    fastestTimeMs = Math.min(fastestTimeMs, move.effectiveResponseTimeMs);
+  });
+
+  const fastestMoves = moves.filter(
+    (move) => move.effectiveResponseTimeMs === fastestTimeMs
+  );
+  if (fastestMoves.length === 1) {
+    return fastestMoves[0];
+  }
+
+  const winningMove = chooseTieBreakerMove(state, fastestMoves);
+  advanceTieBreaker(state, winningMove.playerId);
+  return winningMove;
+}
+
 function playerHasFinished(state: SprintMatchState, userId: string): boolean {
   const player = state.players[userId];
   return player !== undefined && player.hand.length === 0 && player.deck.length === 0;
@@ -517,7 +612,7 @@ function applyPendingSubmitMoveBatch(
 
   moves
     .slice()
-    .sort((left, right) => left.sequence - right.sequence)
+    .sort(compareByEffectiveResponseTime)
     .forEach((move) => {
       const validationFailure = validatePendingSubmitMove(state, move);
       if (validationFailure) {
@@ -538,9 +633,8 @@ function applyPendingSubmitMoveBatch(
     }
 
     if (pileMoves.length > 1) {
-      const winningMove = chooseTieBreakerMove(state, pileMoves);
+      const winningMove = chooseContestedPileWinner(state, pileMoves);
       selectedMoves.push(winningMove);
-      advanceTieBreaker(state, winningMove.playerId);
       pileMoves.forEach((move) => {
         if (move !== winningMove) {
           result.rejections.push(samePileLoserRejection(state, move));
@@ -551,7 +645,7 @@ function applyPendingSubmitMoveBatch(
 
   selectedMoves
     .slice()
-    .sort((left, right) => left.sequence - right.sequence)
+    .sort(compareByEffectiveResponseTime)
     .forEach((move) => {
       const validationFailure = validatePendingSubmitMove(state, move);
       if (validationFailure) {
