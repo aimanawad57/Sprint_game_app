@@ -55,6 +55,7 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
 {
   "stateVersion": 9,
   "status": "active",
+  "elapsedTimeMs": 37250,
   "myHand": [
     {
       "card_id": "card_012",
@@ -89,6 +90,12 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
   "endReason": null
 }
 ```
+
+`elapsedTimeMs` is the authoritative elapsed match duration at the time the
+payload is created. Active matches use the server's current time relative to
+the recorded match start; finished matches keep the final start-to-end
+duration. Clients may advance an active value locally with a monotonic clock,
+but must freeze the timer at the value in the finished state.
 
 Opcode `10` (`matchStarted`) is implemented. Its initial payload uses
 `stateVersion: 1`, `status: "active"`, three cards in `myHand`, deck counts of

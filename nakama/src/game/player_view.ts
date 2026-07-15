@@ -9,7 +9,8 @@ function cloneCard(card: Card): Card {
 
 function buildPlayerStateView(
   state: SprintMatchState,
-  viewerUserId: string
+  viewerUserId: string,
+  serverNowMs: number = Date.now()
 ): PlayerStateView {
   const viewer = state.players[viewerUserId];
   if (!viewer) {
@@ -31,6 +32,7 @@ function buildPlayerStateView(
   return {
     stateVersion: state.stateVersion,
     status: state.status,
+    elapsedTimeMs: calculateElapsedTimeMs(state, serverNowMs),
     myHand: viewer.hand.map(cloneCard),
     myDeckCount: viewer.deck.length,
     opponentHandCount: opponent.hand.length,
@@ -43,4 +45,19 @@ function buildPlayerStateView(
     winnerName: winner ? winner.displayName : null,
     endReason: state.endReason
   };
+}
+
+function calculateElapsedTimeMs(
+  state: SprintMatchState,
+  serverNowMs: number = Date.now()
+): number {
+  if (state.startedAtMs === null) {
+    return 0;
+  }
+
+  const endMs =
+    state.status === MatchStatus.Finished && state.endedAtMs !== null
+      ? state.endedAtMs
+      : serverNowMs;
+  return Math.max(0, Math.floor(endMs - state.startedAtMs));
 }

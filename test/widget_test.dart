@@ -33,10 +33,12 @@ void main() {
     String? winnerName,
     GameMatchStatus status = GameMatchStatus.active,
     GameMatchEndReason? endReason,
+    int elapsedTimeMs = 0,
   }) {
     return GameStateView(
       stateVersion: 1,
       status: status,
+      elapsedTimeMs: elapsedTimeMs,
       myHand: const [
         GameCard(
           cardId: 'card_001',
@@ -89,6 +91,7 @@ void main() {
     String? winnerName,
     GameMatchStatus status = GameMatchStatus.active,
     GameMatchEndReason? endReason,
+    int elapsedTimeMs = 0,
     MoveSubmitCallback? onSubmitMove,
     VoidCallback? onBack,
     VoidCallback? onViewProfile,
@@ -106,6 +109,7 @@ void main() {
               winnerName: winnerName,
               status: status,
               endReason: endReason,
+              elapsedTimeMs: elapsedTimeMs,
             ),
             currentUserId: currentUserId,
             onSubmitMove: onSubmitMove ?? (_, _) {},
@@ -149,14 +153,64 @@ void main() {
     expect(find.text('Winner'), findsNothing);
   });
 
+  testWidgets('advances the active match time from the server anchor', (
+    tester,
+  ) async {
+    await pumpPanel(tester, elapsedTimeMs: 37250);
+    expect(find.text('37 s'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(find.text('38 s'), findsOneWidget);
+  });
+
+  testWidgets('does not regress time on an ordinary state update', (
+    tester,
+  ) async {
+    await pumpPanel(tester, elapsedTimeMs: 5000);
+    await tester.pump(const Duration(milliseconds: 1100));
+    expect(find.text('6 s'), findsOneWidget);
+
+    await pumpPanel(tester, elapsedTimeMs: 5500);
+    expect(find.text('6 s'), findsOneWidget);
+  });
+
+  testWidgets('uses a newer authoritative time after the panel is recreated', (
+    tester,
+  ) async {
+    await pumpPanel(tester, elapsedTimeMs: 2000);
+    expect(find.text('2 s'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await pumpPanel(tester, elapsedTimeMs: 9400);
+    expect(find.text('9 s'), findsOneWidget);
+  });
+
+  testWidgets('freezes at the authoritative finished duration', (tester) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      elapsedTimeMs: 42750,
+    );
+    expect(find.text('42 s'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.text('42 s'), findsOneWidget);
+  });
+
+  testWidgets('cancels the active ticker when the panel is disposed', (
+    tester,
+  ) async {
+    await pumpPanel(tester, elapsedTimeMs: 1000);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('displays the winner username instead of the raw winner id', (
     tester,
   ) async {
-    await pumpPanel(
-      tester,
-      winnerId: 'player-a',
-      winnerName: 'Alice',
-    );
+    await pumpPanel(tester, winnerId: 'player-a', winnerName: 'Alice');
     await revealAndSettle(tester, find.text('Alice'));
 
     expect(find.text('Winner'), findsOneWidget);

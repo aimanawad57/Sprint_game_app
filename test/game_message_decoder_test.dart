@@ -14,6 +14,7 @@ void main() {
     return {
       'stateVersion': 1,
       'status': 'active',
+      'elapsedTimeMs': 0,
       'myHand': [card('card_001')],
       'myDeckCount': 26,
       'opponentHandCount': 3,

@@ -22,6 +22,7 @@ class GameStateView {
   GameStateView({
     required this.stateVersion,
     required this.status,
+    required this.elapsedTimeMs,
     required List<GameCard> myHand,
     required this.myDeckCount,
     required this.opponentHandCount,
@@ -35,6 +36,7 @@ class GameStateView {
 
   final int stateVersion;
   final GameMatchStatus status;
+  final int elapsedTimeMs;
   final List<GameCard> myHand;
   final int myDeckCount;
   final int opponentHandCount;
@@ -90,6 +92,10 @@ class GameStateView {
         fieldName: 'stateVersion',
       ),
       status: _parseStatus(json['status']),
+      elapsedTimeMs: _nonNegativeInt(
+        json['elapsedTimeMs'],
+        fieldName: 'elapsedTimeMs',
+      ),
       myHand: hand,
       myDeckCount: _nonNegativeInt(
         json['myDeckCount'],

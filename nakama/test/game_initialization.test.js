@@ -16,6 +16,7 @@ function loadRuntimeForTest() {
     "createWaitingMatchState," +
     "initializeGameState," +
     "buildPlayerStateView," +
+    "calculateElapsedTimeMs," +
     "applySubmitMove," +
     "hasAnyLegalMove," +
     "isGameStuck," +
@@ -287,6 +288,29 @@ test("private views expose only the viewer hand and public counts", () => {
     () => runtime.buildPlayerStateView(state, "outsider"),
     /outside the match/
   );
+});
+
+test("elapsed match time is authoritative and never negative", () => {
+  const state = createConnectedWaitingState(runtime);
+  runtime.initializeGameState(state, () => 0.25, 10_000);
+
+  assert.equal(runtime.calculateElapsedTimeMs(state, 47_250), 37_250);
+  assert.equal(
+    runtime.buildPlayerStateView(state, "player-a", 47_250).elapsedTimeMs,
+    37_250
+  );
+
+  state.status = runtime.MatchStatus.Finished;
+  state.endedAtMs = 51_999;
+  assert.equal(runtime.calculateElapsedTimeMs(state, 90_000), 41_999);
+
+  state.startedAtMs = null;
+  assert.equal(runtime.calculateElapsedTimeMs(state, 90_000), 0);
+
+  state.startedAtMs = 100_000;
+  state.status = runtime.MatchStatus.Active;
+  state.endedAtMs = null;
+  assert.equal(runtime.calculateElapsedTimeMs(state, 90_000), 0);
 });
 
 test("match lifecycle sends connection changes before private matchStarted events once", () => {
@@ -1835,6 +1859,10 @@ test("profile persistence atomically updates winner, loser, and best time once",
     bestTimeMs: null,
     createdAt: "2026-01-02T00:00:00.000Z"
   });
+  assert.equal(
+    winnerWrite.value.bestTimeMs,
+    runtime.calculateElapsedTimeMs(state, state.endedAtMs + 1000)
+  );
   assert.equal(winnerWrite.version, "winner-version");
   assert.equal(loserWrite.version, "loser-version");
   assert.equal(winnerWrite.permissionWrite, 0);

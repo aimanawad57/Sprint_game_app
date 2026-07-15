@@ -15,6 +15,7 @@ void main() {
     return {
       'stateVersion': 1,
       'status': 'active',
+      'elapsedTimeMs': 37250,
       'myHand': [
         card('card_001', 'red', 'star', 1),
         card('card_002', 'blue', 'tree', 2),
@@ -39,6 +40,7 @@ void main() {
 
       expect(state.stateVersion, 1);
       expect(state.status, GameMatchStatus.active);
+      expect(state.elapsedTimeMs, 37250);
       expect(state.myHand, hasLength(3));
       expect(state.myDeckCount, 26);
       expect(state.opponentHandCount, 3);
@@ -104,6 +106,7 @@ void main() {
     test('rejects negative public and private counts', () {
       for (final field in <String>[
         'stateVersion',
+        'elapsedTimeMs',
         'myDeckCount',
         'opponentHandCount',
         'opponentDeckCount',
@@ -111,6 +114,17 @@ void main() {
         final state = validState()..[field] = -1;
         expect(() => GameStateView.fromJson(state), throwsFormatException);
       }
+    });
+
+    test('rejects missing and non-integer elapsed time', () {
+      expect(
+        () => GameStateView.fromJson(validState()..remove('elapsedTimeMs')),
+        throwsFormatException,
+      );
+      expect(
+        () => GameStateView.fromJson(validState()..['elapsedTimeMs'] = 1.5),
+        throwsFormatException,
+      );
     });
 
     test('rejects unsupported status and invalid winner ids', () {

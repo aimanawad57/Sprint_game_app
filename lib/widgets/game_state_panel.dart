@@ -1,7 +1,7 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../models/game/game_card.dart';
 import '../models/game/game_move.dart';
@@ -106,6 +106,8 @@ class _GameStatePanelState extends State<GameStatePanel> {
                   title: gameFinished ? 'Game finished' : 'Game Ongoing',
                   status: gameState.status.name,
                   stateVersion: gameState.stateVersion,
+                  matchStatus: gameState.status,
+                  elapsedTimeMs: gameState.elapsedTimeMs,
                 ),
                 const SizedBox(height: 14),
                 if (gameFinished) ...[
@@ -209,11 +211,15 @@ class _ArenaHeader extends StatelessWidget {
     required this.title,
     required this.status,
     required this.stateVersion,
+    required this.matchStatus,
+    required this.elapsedTimeMs,
   });
 
   final String title;
   final String status;
   final int stateVersion;
+  final GameMatchStatus matchStatus;
+  final int elapsedTimeMs;
 
   @override
   Widget build(BuildContext context) {
@@ -266,45 +272,88 @@ class _ArenaHeader extends StatelessWidget {
           const SizedBox(width: 8),
           _StatusChip(label: 'State version', value: stateVersion.toString()),
           const SizedBox(width: 8),
-          const _ClockChip(),
+          _ElapsedTimeChip(status: matchStatus, elapsedTimeMs: elapsedTimeMs),
         ],
       ),
     );
   }
 }
 
-class _ClockChip extends StatefulWidget {
-  const _ClockChip();
+class _ElapsedTimeChip extends StatefulWidget {
+  const _ElapsedTimeChip({required this.status, required this.elapsedTimeMs});
+
+  final GameMatchStatus status;
+  final int elapsedTimeMs;
 
   @override
-  State<_ClockChip> createState() => _ClockChipState();
+  State<_ElapsedTimeChip> createState() => _ElapsedTimeChipState();
 }
 
-class _ClockChipState extends State<_ClockChip> {
-  late DateTime _now;
-  Timer? _timer;
+class _ElapsedTimeChipState extends State<_ElapsedTimeChip>
+    with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  late int _anchorElapsedMs;
+  late int _displayedSeconds;
+  Duration _localElapsed = Duration.zero;
+
+  int get _currentElapsedMs => _anchorElapsedMs + _localElapsed.inMilliseconds;
 
   @override
   void initState() {
     super.initState();
-    _now = DateTime.now();
-    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (!mounted) return;
-      setState(() => _now = DateTime.now());
-    });
+    _ticker = createTicker(_handleTick);
+    _anchorElapsedMs = widget.elapsedTimeMs;
+    _displayedSeconds = _anchorElapsedMs ~/ 1000;
+    if (widget.status == GameMatchStatus.active) {
+      _ticker.start();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ElapsedTimeChip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (widget.status == GameMatchStatus.finished) {
+      _ticker.stop();
+      _localElapsed = Duration.zero;
+      _anchorElapsedMs = widget.elapsedTimeMs;
+      _displayedSeconds = _anchorElapsedMs ~/ 1000;
+      return;
+    }
+
+    if (widget.status == GameMatchStatus.active) {
+      final localElapsedMs = _currentElapsedMs;
+      if (oldWidget.status != GameMatchStatus.active ||
+          widget.elapsedTimeMs > localElapsedMs) {
+        _anchorElapsedMs = widget.elapsedTimeMs;
+        _localElapsed = Duration.zero;
+        _ticker
+          ..stop()
+          ..start();
+        _displayedSeconds = _anchorElapsedMs ~/ 1000;
+      } else if (!_ticker.isActive) {
+        _ticker.start();
+      }
+    }
+  }
+
+  void _handleTick(Duration elapsed) {
+    _localElapsed = elapsed;
+    final seconds = _currentElapsedMs ~/ 1000;
+    if (seconds != _displayedSeconds) {
+      setState(() => _displayedSeconds = seconds);
+    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _ticker.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final hour = _now.hour.toString().padLeft(2, '0');
-    final minute = _now.minute.toString().padLeft(2, '0');
-    return _StatusChip(label: 'Time', value: '$hour:$minute');
+    return _StatusChip(label: 'Time', value: '$_displayedSeconds s');
   }
 }
 
