@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import '../config/nakama_config.dart';
+import '../services/guest_id_store.dart';
 import '../services/nakama_service.dart';
 import 'main_page.dart';
 
@@ -30,6 +33,7 @@ class _LoginScreenState extends State<LoginScreen> {
     // initState runs once when this screen is created.
     // The serverClientId is the Web Client ID from Google Cloud.
     _googleSignInReady = GoogleSignIn.instance.initialize(
+      clientId: googleServerClientId,
       serverClientId: googleServerClientId,
     );
 
@@ -117,6 +121,62 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _guestLogin() async {
+    if (_isSigningIn) return;
+
+    setState(() {
+      _isSigningIn = true;
+    });
+
+    var loginSucceeded = false;
+
+    try {
+      final deviceId = getOrCreateGuestId();
+      final session = await _nakamaService.authenticateAsGuest(
+        deviceId: deviceId,
+      ).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          throw TimeoutException(
+            'Cannot reach Nakama at $nakamaHost:$nakamaHttpPort. '
+            'Check the server and Windows Firewall.',
+          );
+        },
+      );
+      final displayName = 'Guest ${deviceId.substring(deviceId.length - 4)}';
+
+      await _nakamaService.updateDisplayName(
+        session: session,
+        displayName: displayName,
+      );
+
+      if (!mounted) return;
+      loginSucceeded = true;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (context) {
+            return MainPage(
+              email: 'Guest account',
+              displayName: displayName,
+              nakamaService: _nakamaService,
+              nakamaSession: session,
+            );
+          },
+        ),
+      );
+    } catch (error) {
+      debugPrint('Guest login failed: $error');
+      if (!mounted) return;
+      _showMessage('Guest login failed: $error');
+    } finally {
+      if (mounted && !loginSucceeded) {
+        setState(() {
+          _isSigningIn = false;
+        });
+      }
+    }
+  }
+
   void _showMessage(String message) {
     // SnackBar is a temporary message shown at the bottom of the screen.
     ScaffoldMessenger.of(
@@ -148,6 +208,13 @@ class _LoginScreenState extends State<LoginScreen> {
               child: Text(
                 _isSigningIn ? 'Signing in...' : 'Continue with Google',
               ),
+            ),
+
+            const SizedBox(height: 12),
+
+            OutlinedButton(
+              onPressed: _isSigningIn ? null : _guestLogin,
+              child: const Text('Continue as Guest'),
             ),
           ],
         ),

@@ -29,6 +29,10 @@ class NakamaService {
     return client.authenticateGoogle(token: idToken);
   }
 
+  Future<nakama.Session> authenticateAsGuest({required String deviceId}) {
+    return client.authenticateDevice(deviceId: deviceId, create: true);
+  }
+
   Future<void> updateDisplayName({
     required nakama.Session session,
     required String displayName,
