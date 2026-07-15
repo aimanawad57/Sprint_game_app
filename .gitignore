@@ -60,3 +60,8 @@ nakama/yarn-error.log*
 # Personal files
 Personal/
 
+# Local AI tooling
+/.agents/
+/.magicpath-work/
+/skills-lock.json
+

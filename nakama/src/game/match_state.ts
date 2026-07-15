@@ -38,4 +38,10 @@ type SprintMatchState = {
   resultPersistencePending: boolean;
   resultPersisted: boolean;
   matchCode: string | null;
+  pendingMoves: ValidatedSubmitMove[];
+  nextPendingMoveSequence: number;
+  nextTieBreakerPlayerId: string | null;
+  createdAtMs: number;
+  lastActivityAtMs: number;
+  finishedEmptySinceMs: number | null;
 };

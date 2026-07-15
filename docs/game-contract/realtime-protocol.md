@@ -147,6 +147,18 @@ Opcode `12` (`moveRejected`) is implemented on both Nakama and Flutter. A
 rejection leaves the current game snapshot unchanged and displays the stable
 reason as user-facing feedback.
 
+Nakama does not apply a valid submitted move immediately. It first validates the
+move against the current authoritative state, queues the valid candidate, and
+waits a 150ms fairness window from the first queued move. Obvious invalid moves
+are still rejected immediately.
+
+When the fairness window is processed, Nakama revalidates all ready candidates.
+If two ready valid moves target different center piles, both moves can be
+applied in the same authoritative update. If two ready valid moves target the
+same center pile, only one can win that pile. The server uses an alternating
+tie-break priority between the two players; the losing same-pile candidate is
+rejected as `stale_move`.
+
 Nakama rejects a submitted move with `player_disconnected` unless both
 canonical players have an active match presence. This server-side rule is
 authoritative; Flutter also disables move controls while opcode `15` reports
@@ -158,13 +170,20 @@ After every accepted non-winning move, Nakama checks both players' current
 hands against both center-pile top cards. If no legal move exists, every center
 pile with more than one card is shuffled independently; a one-card pile remains
 unchanged while the other pile can still be shuffled. Cards never move between
-the two piles. Player hands and private decks are unchanged.
+the two piles during normal pile reshuffles. Player hands and private decks are
+unchanged for this normal reset path.
+
+If both center piles contain exactly one card and no legal move exists, Nakama
+uses the player decks to replace those pile tops while preserving deck counts.
+The first card from Player A's deck becomes the new `pile_1` top card, and the
+old `pile_1` card is inserted back into Player A's deck at a non-front
+position. The same rule applies to Player B's deck and `pile_2`. This special
+replacement only runs when both players have enough deck cards to avoid putting
+the old pile card back as the next draw.
 
 Each reset increments `stateVersion`, sends a private opcode `13` player view,
 and is checked again. Reset attempts are bounded to prevent an infinite loop.
-Flutter handles opcode `13` as an authoritative state replacement. Reset is
-deferred without changing player decks only when both center piles contain one
-card; that edge case is intentionally reserved for a later rule decision.
+Flutter handles opcode `13` as an authoritative state replacement.
 
 ## State-version policy
 
@@ -172,11 +191,18 @@ card; that edge case is intentionally reserved for a later rule decision.
 2. Rejected moves do not increment it.
 3. The client submits the version it was viewing.
 4. A version mismatch does not automatically reject the move.
-5. The server validates the card against the current target-pile top.
-6. If the move remains legal, the server accepts it.
-7. If the changed state makes the move illegal, the server rejects it.
+5. The server validates the card against the current target-pile top before
+   queueing it.
+6. Valid candidates wait in the 150ms fairness window.
+7. When the window is processed, the server revalidates each ready candidate
+   against the current target-pile top.
+8. A batch of one or more accepted moves increments `stateVersion` once.
+9. If the changed state makes a queued candidate illegal, the server rejects it.
 
 This permits a valid move when an opponent changed only the other center pile.
+It also lets two players who reacted to the same visible state compete fairly
+inside the short server-side window instead of making raw network arrival order
+the only deciding factor.
 
 Presence-only changes do not increment `stateVersion`. Connecting or
 disconnecting does not move cards and must not make a submitted gameplay move
@@ -204,6 +230,24 @@ Flutter can also send opcode `2` (`abandonMatch`) while joined to an active
 match. Nakama validates that the sender is one of the match players, declares
 the opponent winner immediately, and uses the same `endReason: "forfeit"` as
 the automatic timeout path.
+
+## Match cleanup and termination
+
+Nakama terminates matches that no longer need to stay alive:
+
+- waiting quickplay matches and match-code lobbies expire after 5 minutes if
+  the game never starts;
+- active matches with no meaningful activity for 15 minutes become
+  `finished` with `endReason: "abandoned"`;
+- abandoned matches terminate after both players are gone;
+- normal and forfeit finished matches terminate only after result persistence
+  is no longer pending and both players are gone;
+- empty finished matches use a short 5-second grace period before termination.
+
+Match-code storage records are deleted when a code lobby expires or when the
+associated match is cleaned up. Codes remain valid while an assigned player is
+still connected so a dropped player can continue to resolve the match ID for
+reconnection.
 
 ## Match-result statistics
 
