@@ -29,36 +29,40 @@ Future<void> revealAndSettle(WidgetTester tester, Finder finder) async {
 
 void main() {
   GameStateView buildState({
+    int stateVersion = 1,
     String? winnerId,
     String? winnerName,
     GameMatchStatus status = GameMatchStatus.active,
     GameMatchEndReason? endReason,
     int elapsedTimeMs = 0,
+    List<GameCard>? myHand,
   }) {
     return GameStateView(
-      stateVersion: 1,
+      stateVersion: stateVersion,
       status: status,
       elapsedTimeMs: elapsedTimeMs,
-      myHand: const [
-        GameCard(
-          cardId: 'card_001',
-          color: GameCardColor.red,
-          shape: GameCardShape.star,
-          count: 1,
-        ),
-        GameCard(
-          cardId: 'card_002',
-          color: GameCardColor.blue,
-          shape: GameCardShape.tree,
-          count: 2,
-        ),
-        GameCard(
-          cardId: 'card_003',
-          color: GameCardColor.green,
-          shape: GameCardShape.circle,
-          count: 3,
-        ),
-      ],
+      myHand:
+          myHand ??
+          const [
+            GameCard(
+              cardId: 'card_001',
+              color: GameCardColor.red,
+              shape: GameCardShape.star,
+              count: 1,
+            ),
+            GameCard(
+              cardId: 'card_002',
+              color: GameCardColor.blue,
+              shape: GameCardShape.tree,
+              count: 2,
+            ),
+            GameCard(
+              cardId: 'card_003',
+              color: GameCardColor.green,
+              shape: GameCardShape.circle,
+              count: 3,
+            ),
+          ],
       myDeckCount: 26,
       opponentHandCount: 3,
       opponentDeckCount: 26,
@@ -86,6 +90,7 @@ void main() {
 
   Future<void> pumpPanel(
     WidgetTester tester, {
+    int stateVersion = 1,
     String currentUserId = 'player-a',
     String? winnerId,
     String? winnerName,
@@ -99,17 +104,20 @@ void main() {
     String? feedbackMessage,
     bool movesEnabled = true,
     String? connectionMessage,
+    List<GameCard>? myHand,
   }) {
     return tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: GameStatePanel(
             gameState: buildState(
+              stateVersion: stateVersion,
               winnerId: winnerId,
               winnerName: winnerName,
               status: status,
               endReason: endReason,
               elapsedTimeMs: elapsedTimeMs,
+              myHand: myHand,
             ),
             currentUserId: currentUserId,
             onSubmitMove: onSubmitMove ?? (_, _) {},
@@ -341,6 +349,84 @@ void main() {
 
     expect(submittedCardId, 'card_001');
     expect(submittedPileId, GamePileId.pile1);
+  });
+
+  testWidgets('keeps the selected card across an opponent state update', (
+    tester,
+  ) async {
+    String? submittedCardId;
+    await pumpPanel(
+      tester,
+      stateVersion: 1,
+      onSubmitMove: (cardId, _) => submittedCardId = cardId,
+    );
+
+    final handCard = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, handCard);
+    await tester.tap(handCard);
+    await tester.pump();
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+
+    await pumpPanel(
+      tester,
+      stateVersion: 2,
+      onSubmitMove: (cardId, _) => submittedCardId = cardId,
+    );
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+
+    final pile = find.byKey(const ValueKey('centerPile1'));
+    await revealAndSettle(tester, pile);
+    await tester.tap(pile);
+    expect(submittedCardId, 'card_001');
+  });
+
+  testWidgets('clears selection when the card leaves the hand', (tester) async {
+    await pumpPanel(tester, stateVersion: 1);
+
+    final handCard = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, handCard);
+    await tester.tap(handCard);
+    await tester.pump();
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+
+    await pumpPanel(
+      tester,
+      stateVersion: 2,
+      myHand: const [
+        GameCard(
+          cardId: 'card_002',
+          color: GameCardColor.blue,
+          shape: GameCardShape.tree,
+          count: 2,
+        ),
+        GameCard(
+          cardId: 'card_003',
+          color: GameCardColor.green,
+          shape: GameCardShape.circle,
+          count: 3,
+        ),
+      ],
+    );
+
+    expect(find.byIcon(Icons.check_circle), findsNothing);
+    expect(
+      find.text('Select one of your cards, then select a center pile.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('tapping the selected card again deselects it', (tester) async {
+    await pumpPanel(tester);
+
+    final handCard = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, handCard);
+    await tester.tap(handCard);
+    await tester.pump();
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+
+    await tester.tap(handCard);
+    await tester.pump();
+    expect(find.byIcon(Icons.check_circle), findsNothing);
   });
 
   testWidgets('shows pending and rejection feedback', (tester) async {

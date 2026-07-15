@@ -60,8 +60,7 @@ class _GameStatePanelState extends State<GameStatePanel> {
     final selectedCardStillExists = widget.gameState.myHand.any(
       (card) => card.cardId == _selectedCardId,
     );
-    if (!selectedCardStillExists ||
-        oldWidget.gameState.stateVersion != widget.gameState.stateVersion) {
+    if (!selectedCardStillExists) {
       _selectedCardId = null;
     }
   }
