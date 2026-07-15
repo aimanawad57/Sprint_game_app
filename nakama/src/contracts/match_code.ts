@@ -9,7 +9,9 @@ const MATCH_CODE_LENGTH = 6;
 const MATCH_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 type MatchCodeRecord = {
-  matchId: string;
+  // null while the code is reserved but the match it will point to hasn't
+  // been created yet (see reserveMatchCode in create_match_by_code.ts).
+  matchId: string | null;
   creatorId: string;
   createdAtMs: number;
 };
