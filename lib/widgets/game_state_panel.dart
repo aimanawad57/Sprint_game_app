@@ -255,10 +255,7 @@ class _ArenaHeader extends StatelessWidget {
                     fontStyle: FontStyle.italic,
                     fontWeight: FontWeight.w900,
                     shadows: const [
-                      Shadow(
-                        color: _sprintYellow,
-                        offset: Offset(3, 3),
-                      ),
+                      Shadow(color: _sprintYellow, offset: Offset(3, 3)),
                     ],
                   ),
                 ),
@@ -461,9 +458,7 @@ class _CenterTable extends StatelessWidget {
               ),
               Icon(
                 selected ? Icons.touch_app : Icons.bolt,
-                color: selected
-                    ? _sprintBlue
-                    : const Color(0xFF22BFA8),
+                color: selected ? _sprintBlue : const Color(0xFF22BFA8),
               ),
             ],
           ),
@@ -574,9 +569,7 @@ class _PileStack extends StatelessWidget {
               : Colors.white.withValues(alpha: 0.36),
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
-            color: active
-                ? _sprintBlue
-                : _sprintBlue.withValues(alpha: 0.18),
+            color: active ? _sprintBlue : _sprintBlue.withValues(alpha: 0.18),
             width: active ? 3 : 1.4,
           ),
         ),
@@ -745,10 +738,7 @@ class _HandCardTile extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: selected
-                  ? [
-                      _sprintYellow,
-                      _sprintOrange,
-                    ]
+                  ? [_sprintYellow, _sprintOrange]
                   : [
                       Colors.white.withValues(alpha: 0.88),
                       _sprintLavenderDeep.withValues(alpha: 0.7),
@@ -771,11 +761,7 @@ class _HandCardTile extends StatelessWidget {
                 const Positioned(
                   top: 6,
                   right: 6,
-                  child: Icon(
-                    Icons.check_circle,
-                    color: _sprintBlue,
-                    size: 18,
-                  ),
+                  child: Icon(Icons.check_circle, color: _sprintBlue, size: 18),
                 ),
             ],
           ),
@@ -943,21 +929,36 @@ class _CardFaceWash extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final washPaint = Paint()
+    final rect = Offset.zero & size;
+
+    final softTint = Paint()
       ..shader = RadialGradient(
-        center: const Alignment(-0.42, -0.45),
-        radius: 0.78,
+        center: const Alignment(0.0, 0.08),
+        radius: 0.95,
         colors: [
-          Colors.white.withValues(alpha: 0.92),
-          color.withValues(alpha: 0.055),
+          color.withValues(alpha: 0.075),
+          color.withValues(alpha: 0.028),
           Colors.transparent,
         ],
-      ).createShader(Offset.zero & size);
+        stops: const [0.0, 0.58, 1.0],
+      ).createShader(rect);
+    canvas.drawRect(rect, softTint);
 
-    canvas.drawRect(Offset.zero & size, washPaint);
+    final diagonalSheen = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Colors.white.withValues(alpha: 0.22),
+          Colors.white.withValues(alpha: 0.04),
+          color.withValues(alpha: 0.035),
+        ],
+        stops: const [0.0, 0.48, 1.0],
+      ).createShader(rect);
+    canvas.drawRect(rect, diagonalSheen);
 
     final linePaint = Paint()
-      ..color = color.withValues(alpha: 0.10)
+      ..color = color.withValues(alpha: 0.085)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
     final inset = size.shortestSide * 0.16;
@@ -1041,10 +1042,7 @@ class _CardBackPainter extends CustomPainter {
       ..shader = LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
-        colors: [
-          Colors.white.withValues(alpha: 0.14),
-          Colors.transparent,
-        ],
+        colors: [Colors.white.withValues(alpha: 0.14), Colors.transparent],
       ).createShader(rect);
     canvas.drawRect(rect, shine);
   }
@@ -1333,10 +1331,7 @@ class _ArenaPainter extends CustomPainter {
     final glowPaint = Paint()
       ..shader =
           RadialGradient(
-            colors: [
-              Colors.white.withValues(alpha: 0.55),
-              Colors.transparent,
-            ],
+            colors: [Colors.white.withValues(alpha: 0.55), Colors.transparent],
           ).createShader(
             Rect.fromCircle(
               center: Offset(size.width * 0.18, size.height * 0.1),
