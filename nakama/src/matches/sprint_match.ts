@@ -2,7 +2,12 @@ const invalidMatchParametersMessage =
   "expectedUserIds must contain exactly two distinct, non-empty user IDs";
 const unauthorizedJoinMessage = "This user was not assigned to this match.";
 const disconnectTimeoutMs = 30 * 1000;
+// Fairness resolution window. Sized adaptively per match from the players'
+// measured RTT (max(RTT)/2, clamped to [min, max]); moveFairnessWindowMs is
+// the fallback used until an RTT estimate exists.
 const moveFairnessWindowMs = 150;
+const minFairnessWindowMs = 100;
+const maxFairnessWindowMs = 300;
 const waitingMatchTimeoutMs = 5 * 60 * 1000;
 const activeIdleTimeoutMs = 15 * 60 * 1000;
 const finishedEmptyGraceMs = 5 * 1000;
@@ -94,7 +99,8 @@ function createWaitingMatchState(
     hand: [],
     deck: [],
     connected: false,
-    disconnectedAtMs: null
+    disconnectedAtMs: null,
+    rttEstimateMs: null
   };
   players[playerBId] = {
     userId: playerBId,
@@ -102,7 +108,8 @@ function createWaitingMatchState(
     hand: [],
     deck: [],
     connected: false,
-    disconnectedAtMs: null
+    disconnectedAtMs: null,
+    rttEstimateMs: null
   };
 
   return {
@@ -122,6 +129,7 @@ function createWaitingMatchState(
     resultPersistencePending: false,
     resultPersisted: false,
     matchCode: null,
+    lastBroadcastAtMs: null,
     pendingMoves: [],
     nextPendingMoveSequence: 0,
     nextTieBreakerPlayerId: playerAId,
@@ -147,7 +155,8 @@ function createOpenWaitingMatchState(
     hand: [],
     deck: [],
     connected: false,
-    disconnectedAtMs: null
+    disconnectedAtMs: null,
+    rttEstimateMs: null
   };
 
   return {
@@ -167,6 +176,7 @@ function createOpenWaitingMatchState(
     resultPersistencePending: false,
     resultPersisted: false,
     matchCode: code,
+    lastBroadcastAtMs: null,
     pendingMoves: [],
     nextPendingMoveSequence: 0,
     nextTieBreakerPlayerId: creatorId,
@@ -321,6 +331,10 @@ function sendMatchStarted(
       [presence]
     );
   });
+
+  // Anchors reaction-time fairness: a move's client-reported reaction time is
+  // measured from this broadcast (see resolveMoveTiming in apply_move.ts).
+  state.lastBroadcastAtMs = Date.now();
 }
 
 function sendPlayerStateViews(
@@ -340,6 +354,8 @@ function sendPlayerStateViews(
       [presence]
     );
   });
+
+  state.lastBroadcastAtMs = Date.now();
 }
 
 function sendMoveRejected(
@@ -389,10 +405,32 @@ function enqueuePendingSubmitMove(
   return null;
 }
 
+// Sizes the resolution window from the two players' measured RTT: two
+// low-latency players resolve near-instantly (window floors at min), while a
+// real latency gap gets a wider window so the slower player's move can still
+// arrive and be compared fairly. max(RTT)/2, clamped to [min, max]. Falls
+// back to the default until any RTT estimate exists.
+function computeFairnessWindowMs(state: SprintMatchState): number {
+  const estimates: number[] = [];
+  state.playerOrder.forEach((userId) => {
+    const rtt = state.players[userId]?.rttEstimateMs;
+    if (typeof rtt === "number") {
+      estimates.push(rtt);
+    }
+  });
+  if (estimates.length === 0) {
+    return moveFairnessWindowMs;
+  }
+
+  const maxRttMs = estimates.reduce((max, rtt) => Math.max(max, rtt), 0);
+  const windowMs = Math.round(maxRttMs / 2);
+  return Math.min(maxFairnessWindowMs, Math.max(minFairnessWindowMs, windowMs));
+}
+
 function collectReadyPendingSubmitMoves(
   state: SprintMatchState,
   nowMs: number,
-  fairnessWindowMs: number = moveFairnessWindowMs
+  fairnessWindowMs: number = computeFairnessWindowMs(state)
 ): ValidatedSubmitMove[] {
   if (state.pendingMoves.length === 0) {
     return [];
@@ -418,7 +456,7 @@ function collectReadyPendingSubmitMoves(
   });
   state.pendingMoves = waitingMoves;
 
-  return readyMoves.sort((left, right) => left.sequence - right.sequence);
+  return readyMoves.sort(compareByEffectiveResponseTime);
 }
 
 function sendPlayerStateView(
@@ -686,7 +724,8 @@ function sprintMatchJoin(
         hand: [],
         deck: [],
         connected: false,
-        disconnectedAtMs: null
+        disconnectedAtMs: null,
+        rttEstimateMs: null
       };
       logger.info("Sprint match code redeemed by user: %s", presence.userId);
     }
@@ -919,6 +958,13 @@ function sprintMatchLoop(
       );
       sendMoveRejected(dispatcher, state, enqueueFailure);
       return;
+    }
+
+    // Refresh this player's RTT estimate from the move's timing so the next
+    // fairness window is sized to the current connection quality.
+    const movingPlayer = state.players[result.move.playerId];
+    if (movingPlayer && result.move.networkRttEstimateMs !== null) {
+      movingPlayer.rttEstimateMs = result.move.networkRttEstimateMs;
     }
 
     logger.info(

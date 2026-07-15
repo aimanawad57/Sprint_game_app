@@ -49,6 +49,7 @@ type ConnectionChangedPayload = {
 type PlayerStateView = {
   stateVersion: number;
   status: MatchStatus;
+  elapsedTimeMs: number;
   myHand: Card[];
   myDeckCount: number;
   opponentHandCount: number;

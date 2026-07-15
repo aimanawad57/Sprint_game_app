@@ -1,0 +1,19 @@
+# Force LF line endings for source and text files, regardless of which OS
+# or editor last touched them, so diffs reflect real content changes instead
+# of line-ending noise.
+* text=auto eol=lf
+
+*.dart text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.csv text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.jar binary

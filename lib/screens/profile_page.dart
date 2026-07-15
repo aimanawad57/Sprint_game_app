@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/player_profile.dart';
+import '../utils/elapsed_time_format.dart';
 import '../widgets/profile_status_panel.dart';
 
 class ProfilePage extends StatelessWidget {
@@ -130,7 +131,7 @@ class _StatsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final bestTime = profile.bestTimeMs == null
         ? '-'
-        : '${profile.bestTimeMs} ms';
+        : formatElapsedTimeMs(profile.bestTimeMs!);
 
     return _ProfileCard(
       title: 'Stats',
