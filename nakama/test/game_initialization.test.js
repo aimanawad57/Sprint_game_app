@@ -34,6 +34,9 @@ function loadRuntimeForTest() {
     "activeIdleTimeoutMs," +
     "finishedEmptyGraceMs," +
     "persistPendingMatchResult," +
+    "ensureSprintWinsLeaderboard," +
+    "writeSprintWinsLeaderboardRecord," +
+    "rpcGetWinsLeaderboard," +
     "rpcGetOrCreateProfile," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
@@ -1780,6 +1783,7 @@ test("profile persistence atomically updates winner, loser, and best time once",
   const state = finishedStateForStatistics(runtime);
   let reads = 0;
   const updates = [];
+  const leaderboardWrites = [];
   const nk = {
     storageRead() {
       reads += 1;
@@ -1803,6 +1807,26 @@ test("profile persistence atomically updates winner, loser, and best time once",
     multiUpdate(accountUpdates, storageWrites, storageDeletes, walletUpdates) {
       updates.push({accountUpdates, storageWrites, storageDeletes, walletUpdates});
       return {storageWriteAcks: [], walletUpdateAcks: []};
+    },
+    leaderboardRecordWrite(
+      leaderboardID,
+      ownerID,
+      username,
+      score,
+      subscore,
+      metadata,
+      operator
+    ) {
+      leaderboardWrites.push({
+        leaderboardID,
+        ownerID,
+        username,
+        score,
+        subscore,
+        metadata,
+        operator
+      });
+      return {};
     }
   };
 
@@ -1839,6 +1863,21 @@ test("profile persistence atomically updates winner, loser, and best time once",
   assert.equal(loserWrite.version, "loser-version");
   assert.equal(winnerWrite.permissionWrite, 0);
   assert.equal(loserWrite.permissionWrite, 0);
+  assert.deepEqual(normalize(leaderboardWrites), [
+    {
+      leaderboardID: "sprint_wins",
+      ownerID: "player-a",
+      username: "Alice",
+      score: 2,
+      subscore: 0,
+      metadata: {
+        gamesPlayed: 3,
+        losses: 1,
+        bestTimeMs: 5000
+      },
+      operator: "set"
+    }
+  ]);
 
   assert.equal(runtime.persistPendingMatchResult(state, nk), false);
   assert.equal(reads, 1);
@@ -1936,6 +1975,140 @@ test("failed profile persistence remains pending for a later tick", () => {
   );
   assert.equal(state.resultPersistencePending, true);
   assert.equal(state.resultPersisted, false);
+});
+
+test("leaderboard write failure does not retry profile persistence", () => {
+  const state = finishedStateForStatistics(runtime);
+  let profileWrites = 0;
+  const nk = {
+    storageRead() {
+      return [];
+    },
+    multiUpdate() {
+      profileWrites += 1;
+      return {storageWriteAcks: [], walletUpdateAcks: []};
+    },
+    leaderboardRecordWrite() {
+      throw new Error("temporary leaderboard failure");
+    }
+  };
+
+  assert.equal(runtime.persistPendingMatchResult(state, nk), true);
+  assert.equal(profileWrites, 1);
+  assert.equal(state.resultPersistencePending, false);
+  assert.equal(state.resultPersisted, true);
+  assert.equal(runtime.persistPendingMatchResult(state, nk), false);
+  assert.equal(profileWrites, 1);
+});
+
+test("leaderboard creation uses an authoritative descending wins board", () => {
+  const calls = [];
+  const nk = {
+    leaderboardCreate(
+      leaderboardID,
+      authoritative,
+      sortOrder,
+      operator,
+      resetSchedule,
+      metadata,
+      enableRank
+    ) {
+      calls.push({
+        leaderboardID,
+        authoritative,
+        sortOrder,
+        operator,
+        resetSchedule,
+        metadata,
+        enableRank
+      });
+    }
+  };
+
+  runtime.ensureSprintWinsLeaderboard(nk, {info() {}});
+
+  assert.deepEqual(normalize(calls), [
+    {
+      leaderboardID: "sprint_wins",
+      authoritative: true,
+      sortOrder: "descending",
+      operator: "set",
+      resetSchedule: null,
+      metadata: {title: "Sprint Wins"},
+      enableRank: true
+    }
+  ]);
+});
+
+test("leaderboard creation tolerates an existing leaderboard", () => {
+  let logCount = 0;
+  const nk = {
+    leaderboardCreate() {
+      throw new Error("already exists");
+    }
+  };
+
+  assert.doesNotThrow(() =>
+    runtime.ensureSprintWinsLeaderboard(nk, {info() { logCount += 1; }})
+  );
+  assert.equal(logCount, 1);
+});
+
+test("wins leaderboard RPC returns UI-safe entries", () => {
+  const nk = {
+    leaderboardRecordsList(leaderboardID, owners, limit) {
+      assert.equal(leaderboardID, "sprint_wins");
+      assert.deepEqual(normalize(owners), []);
+      assert.equal(limit, 25);
+      return {
+        records: [
+          {
+            leaderboardId: "sprint_wins",
+            ownerId: "player-a",
+            username: "Alice",
+            score: 7,
+            subscore: 0,
+            numScore: 1,
+            metadata: {
+              gamesPlayed: 9,
+              losses: 2,
+              bestTimeMs: 4200
+            },
+            createTime: 1,
+            updateTime: 1,
+            expiryTime: 0,
+            rank: 1
+          }
+        ]
+      };
+    }
+  };
+
+  const result = runtime.rpcGetWinsLeaderboard(
+    {userId: "player-a"},
+    {info() {}},
+    nk,
+    JSON.stringify({limit: 25})
+  );
+
+  assert.deepEqual(JSON.parse(result), [
+    {
+      rank: 1,
+      userId: "player-a",
+      displayName: "Alice",
+      wins: 7,
+      gamesPlayed: 9,
+      losses: 2,
+      bestTimeMs: 4200
+    }
+  ]);
+});
+
+test("wins leaderboard RPC requires an authenticated user", () => {
+  assert.throws(
+    () => runtime.rpcGetWinsLeaderboard({}, {info() {}}, {}, ""),
+    /session is required/
+  );
 });
 
 test("get_or_create_profile returns an existing owner profile", () => {

@@ -121,6 +121,19 @@ function persistPendingMatchResult(
     null
   );
 
+  try {
+    writeSprintWinsLeaderboardRecord(
+      nk,
+      winnerId,
+      state.players[winnerId].displayName || "Player",
+      winnerProfile
+    );
+  } catch (error) {
+    // The profile is the source of truth. If the leaderboard write fails,
+    // do not retry the whole result persistence because that could count the
+    // same match twice in player stats.
+  }
+
   state.resultPersisted = true;
   state.resultPersistencePending = false;
   return true;

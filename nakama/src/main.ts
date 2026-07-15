@@ -5,9 +5,11 @@ function InitModule(
   initializer: nkruntime.Initializer
 ): void {
   validateCardCatalog(CARD_CATALOG);
+  ensureSprintWinsLeaderboard(nk, logger);
 
   initializer.registerRpc("healthcheck", rpcHealthcheck);
   initializer.registerRpc("get_or_create_profile", rpcGetOrCreateProfile);
+  initializer.registerRpc("get_wins_leaderboard", rpcGetWinsLeaderboard);
   initializer.registerRpc("create_match_by_code", rpcCreateMatchByCode);
   initializer.registerRpc("join_match_by_code", rpcJoinMatchByCode);
   initializer.registerMatchmakerMatched(matchmakerMatched);

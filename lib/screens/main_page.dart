@@ -8,6 +8,7 @@ import '../services/nakama_service.dart';
 import '../widgets/backend_status_panel.dart';
 import '../widgets/disconnected_match_banner.dart';
 import 'create_join_match_screen.dart';
+import 'leaderboard_page.dart';
 import 'login_screen.dart';
 import 'play_page.dart';
 import 'profile_page.dart';
@@ -81,12 +82,6 @@ class _MainPageState extends State<MainPage> {
         _profileStatus = ProfileStatus.failed;
       });
     }
-  }
-
-  void _showComingSoon(BuildContext context, String featureName) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$featureName will be added later')));
   }
 
   Future<void> _openPlayPage() async {
@@ -215,6 +210,19 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
+  void _openLeaderboardPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) {
+          return LeaderboardPage(
+            nakamaService: widget.nakamaService,
+            nakamaSession: widget.nakamaSession,
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _signOut(BuildContext context) async {
     await widget.nakamaService.closeRealtimeSocket();
     await GoogleSignIn.instance.signOut();
@@ -301,7 +309,7 @@ class _MainPageState extends State<MainPage> {
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(
-                onPressed: () => _showComingSoon(context, 'Leaderboard'),
+                onPressed: _openLeaderboardPage,
                 icon: const Icon(Icons.leaderboard),
                 label: const Text('Leaderboard'),
               ),

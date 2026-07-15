@@ -7,6 +7,7 @@ import '../config/nakama_config.dart';
 import '../config/game_protocol.dart';
 import '../models/created_match_by_code.dart';
 import '../models/game/game_move.dart';
+import '../models/leaderboard_entry.dart';
 import '../models/player_profile.dart';
 
 class NakamaService {
@@ -182,5 +183,24 @@ class NakamaService {
     }
     final json = jsonDecode(response) as Map<String, dynamic>;
     return PlayerProfile.fromJson(json);
+  }
+
+  Future<List<LeaderboardEntry>> loadWinsLeaderboard(
+    nakama.Session session, {
+    int limit = 50,
+  }) async {
+    final response = await client.rpc(
+      session: session,
+      id: 'get_wins_leaderboard',
+      payload: jsonEncode({'limit': limit}),
+    );
+    if (response == null) {
+      throw Exception('The server did not return a leaderboard.');
+    }
+
+    final json = jsonDecode(response) as List<dynamic>;
+    return json
+        .map((entry) => LeaderboardEntry.fromJson(entry as Map<String, dynamic>))
+        .toList();
   }
 }
