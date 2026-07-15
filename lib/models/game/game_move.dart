@@ -12,17 +12,26 @@ class SubmitMovePayload {
     required this.cardId,
     required this.targetPileId,
     required this.expectedStateVersion,
+    this.reactionTimeMs,
   });
 
   final String cardId;
   final GamePileId targetPileId;
   final int expectedStateVersion;
 
+  /// How long the player took to submit this move after their client
+  /// processed the state update it responds to, measured entirely on the
+  /// device's own clock. The server uses it to resolve contested piles by
+  /// actual reaction speed instead of network arrival order. Omitted from the
+  /// wire payload when unmeasured.
+  final int? reactionTimeMs;
+
   Map<String, dynamic> toJson() {
     return {
       'card_id': cardId,
       'targetPileId': targetPileId.wireValue,
       'expectedStateVersion': expectedStateVersion,
+      if (reactionTimeMs != null) 'reactionTimeMs': reactionTimeMs,
     };
   }
 }

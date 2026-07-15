@@ -26,6 +26,7 @@ function loadRuntimeForTest() {
     "resolveDisconnectTimeout," +
     "abandonMatch," +
     "moveFairnessWindowMs," +
+    "computeFairnessWindowMs," +
     "validateSubmitMoveCandidate," +
     "collectReadyPendingSubmitMoves," +
     "applyPendingSubmitMoveBatch," +
@@ -912,6 +913,190 @@ test("pending move batch accepts valid moves on different piles together", () =>
   assert.equal(state.centerPiles.pile_2.at(-1).card_id, "player_b_move");
 });
 
+test("same-pile conflict is won by reaction-adjusted time, not arrival order", () => {
+  const state = createInitializedState(runtime);
+  state.lastBroadcastAtMs = 1000;
+  state.nextTieBreakerPlayerId = "player-a";
+  state.players["player-a"].hand = [
+    card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1)
+  ];
+  state.players["player-b"].hand = [
+    card("player_b_move", runtime.CardColor.Red, runtime.CardShape.Diamond, 2)
+  ];
+  state.centerPiles.pile_1 = [
+    card("pile_1_top", runtime.CardColor.Red, runtime.CardShape.Flag, 5)
+  ];
+
+  // player-a: fast network (arrives first) but slow reaction (45ms).
+  const fastNetworkSlowReaction = validatedMove(
+    runtime,
+    state,
+    "player-a",
+    {
+      card_id: "player_a_move",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: 45
+    },
+    1050,
+    0
+  );
+  // player-b: slow network (arrives 70ms later) but fast reaction (20ms).
+  const slowNetworkFastReaction = validatedMove(
+    runtime,
+    state,
+    "player-b",
+    {
+      card_id: "player_b_move",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: 20
+    },
+    1120,
+    1
+  );
+
+  assert.equal(fastNetworkSlowReaction.effectiveResponseTimeMs, 1045);
+  assert.equal(slowNetworkFastReaction.effectiveResponseTimeMs, 1020);
+
+  const result = runtime.applyPendingSubmitMoveBatch(
+    state,
+    [fastNetworkSlowReaction, slowNetworkFastReaction],
+    1300
+  );
+
+  // player-b wins the pile despite their move physically arriving later.
+  assert.deepEqual(normalize(result.acceptedPlayerIds), ["player-b"]);
+  assert.equal(result.rejections.length, 1);
+  assert.equal(
+    result.rejections[0].rejection.reason,
+    runtime.MoveRejectionReason.StaleMove
+  );
+  assert.equal(state.centerPiles.pile_1.at(-1).card_id, "player_b_move");
+  // A clear (non-tie) reaction-time winner must not consume the tie-breaker.
+  assert.equal(state.nextTieBreakerPlayerId, "player-a");
+});
+
+test("an inflated reaction-time claim is clamped to the observed elapsed time", () => {
+  const state = createInitializedState(runtime);
+  state.lastBroadcastAtMs = 1000;
+  state.players["player-a"].hand = [
+    card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1)
+  ];
+  state.centerPiles.pile_1 = [
+    card("pile_1_top", runtime.CardColor.Red, runtime.CardShape.Flag, 5)
+  ];
+
+  const move = validatedMove(
+    runtime,
+    state,
+    "player-a",
+    {
+      card_id: "player_a_move",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: 999999
+    },
+    1050,
+    0
+  );
+
+  // Clamped to elapsed (1050 - 1000 = 50): a claim cannot beat physics.
+  assert.equal(move.effectiveResponseTimeMs, 1050);
+  assert.equal(move.networkRttEstimateMs, 0);
+});
+
+test("a missing or malformed reaction time falls back to arrival order", () => {
+  const state = createInitializedState(runtime);
+  state.lastBroadcastAtMs = 1000;
+  state.players["player-a"].hand = [
+    card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1),
+    card("player_a_other", runtime.CardColor.Red, runtime.CardShape.Circle, 3)
+  ];
+  state.centerPiles.pile_1 = [
+    card("pile_1_top", runtime.CardColor.Red, runtime.CardShape.Flag, 5)
+  ];
+
+  const withoutReaction = validatedMove(
+    runtime,
+    state,
+    "player-a",
+    {
+      card_id: "player_a_move",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion
+    },
+    1080,
+    0
+  );
+  assert.equal(withoutReaction.effectiveResponseTimeMs, 1080);
+  assert.equal(withoutReaction.networkRttEstimateMs, null);
+
+  const malformedReaction = validatedMove(
+    runtime,
+    state,
+    "player-a",
+    {
+      card_id: "player_a_other",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: "instant"
+    },
+    1090,
+    1
+  );
+  assert.equal(malformedReaction.effectiveResponseTimeMs, 1090);
+  assert.equal(malformedReaction.networkRttEstimateMs, null);
+});
+
+test("reaction compensation only applies to moves responding to the current state version", () => {
+  const state = createInitializedState(runtime);
+  state.lastBroadcastAtMs = 1000;
+  state.players["player-a"].hand = [
+    card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1)
+  ];
+  state.centerPiles.pile_1 = [
+    card("pile_1_top", runtime.CardColor.Red, runtime.CardShape.Flag, 5)
+  ];
+
+  const staleVersionMove = validatedMove(
+    runtime,
+    state,
+    "player-a",
+    {
+      card_id: "player_a_move",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion - 1,
+      reactionTimeMs: 10
+    },
+    1100,
+    0
+  );
+
+  assert.equal(staleVersionMove.effectiveResponseTimeMs, 1100);
+  assert.equal(staleVersionMove.networkRttEstimateMs, null);
+});
+
+test("the fairness window is sized adaptively from measured RTT", () => {
+  const state = createInitializedState(runtime);
+
+  // No measurement yet: fall back to the default window.
+  assert.equal(runtime.computeFairnessWindowMs(state), runtime.moveFairnessWindowMs);
+
+  // Two low-latency players: max(RTT)/2 floors at the minimum (100ms).
+  state.players["player-a"].rttEstimateMs = 30;
+  state.players["player-b"].rttEstimateMs = 40;
+  assert.equal(runtime.computeFairnessWindowMs(state), 100);
+
+  // A real latency gap widens the window to max(RTT)/2 = 200ms.
+  state.players["player-b"].rttEstimateMs = 400;
+  assert.equal(runtime.computeFairnessWindowMs(state), 200);
+
+  // Very high latency is capped at the maximum (300ms).
+  state.players["player-b"].rttEstimateMs = 900;
+  assert.equal(runtime.computeFairnessWindowMs(state), 300);
+});
+
 test("same-pile fairness ties alternate between players", () => {
   const state = createInitializedState(runtime);
   state.nextTieBreakerPlayerId = "player-a";
@@ -957,7 +1142,7 @@ test("same-pile fairness ties alternate between players", () => {
       targetPileId: runtime.PileId.Pile1,
       expectedStateVersion: firstVersion
     },
-    1010,
+    1000,
     1
   );
 
@@ -999,7 +1184,7 @@ test("same-pile fairness ties alternate between players", () => {
       targetPileId: runtime.PileId.Pile1,
       expectedStateVersion: secondVersion
     },
-    2010,
+    2000,
     3
   );
 

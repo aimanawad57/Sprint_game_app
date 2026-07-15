@@ -67,6 +67,10 @@ class _PlayPageState extends State<PlayPage> {
   int _matchedPlayerCount = 0;
   GameConnectionView? _connectionState;
 
+  /// When the most recent authoritative state was applied, on this device's
+  /// clock. Anchors the reaction-time measurement sent with the next move.
+  DateTime? _lastAuthoritativeStateAt;
+
   @override
   void initState() {
     super.initState();
@@ -343,6 +347,11 @@ class _PlayPageState extends State<PlayPage> {
     final pendingMoveResolved =
         pendingCardWasPlayed || gameState.status == GameMatchStatus.finished;
 
+    // Reaction time for the next move is measured from this moment (when the
+    // client processed the state it will be reacting to), on this device's
+    // own clock, so it needs no synchronization with the server clock.
+    _lastAuthoritativeStateAt = DateTime.now();
+
     setState(() {
       _gameState = gameState;
       _errorMessage = null;
@@ -368,6 +377,11 @@ class _PlayPageState extends State<PlayPage> {
       return;
     }
 
+    final lastStateAt = _lastAuthoritativeStateAt;
+    final reactionTimeMs = lastStateAt == null
+        ? null
+        : DateTime.now().difference(lastStateAt).inMilliseconds;
+
     setState(() {
       _isMovePending = true;
       _pendingCardId = cardId;
@@ -382,6 +396,7 @@ class _PlayPageState extends State<PlayPage> {
           cardId: cardId,
           targetPileId: pileId,
           expectedStateVersion: gameState.stateVersion,
+          reactionTimeMs: reactionTimeMs,
         ),
       );
     } catch (error) {

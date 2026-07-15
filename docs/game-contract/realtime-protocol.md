@@ -34,9 +34,19 @@ changes from the current callback and a full snapshot of connected user IDs.
 {
   "card_id": "card_017",
   "targetPileId": "pile_1",
-  "expectedStateVersion": 8
+  "expectedStateVersion": 8,
+  "reactionTimeMs": 240
 }
 ```
+
+`reactionTimeMs` is optional: how long the player took to submit the move
+after their client processed the state update it responds to, measured on the
+device's own clock. The server uses it to resolve contested piles by reaction
+speed instead of network arrival order (see the fairness window below). The
+claim is clamped to the server-observed time since the last broadcast, and
+compensation only applies when `expectedStateVersion` matches the current
+state version. A missing or malformed value falls back to arrival-order
+resolution, so older clients keep working.
 
 Valid pile IDs:
 
@@ -149,14 +159,24 @@ reason as user-facing feedback.
 
 Nakama does not apply a valid submitted move immediately. It first validates the
 move against the current authoritative state, queues the valid candidate, and
-waits a 150ms fairness window from the first queued move. Obvious invalid moves
-are still rejected immediately.
+waits a fairness window from the first queued move. Obvious invalid moves are
+still rejected immediately.
+
+The fairness window is sized adaptively per match from the two players'
+measured round-trip time (`max(RTT) / 2`, clamped to 100-300ms), so two
+low-latency players resolve near-instantly while a real latency gap gets a
+wider window. RTT is derived from each player's own moves
+(`receivedAt - lastBroadcast - reactionTime`); until an estimate exists a
+150ms default is used.
 
 When the fairness window is processed, Nakama revalidates all ready candidates.
 If two ready valid moves target different center piles, both moves can be
 applied in the same authoritative update. If two ready valid moves target the
-same center pile, only one can win that pile. The server uses an alternating
-tie-break priority between the two players; the losing same-pile candidate is
+same center pile, only one can win that pile. The winner is the move with the
+smaller reaction-adjusted response time (`lastBroadcast + reactionTimeMs`), so
+the player who genuinely reacted faster wins regardless of whose packet
+arrived first. Only on an exact tie does the server fall back to an alternating
+tie-break priority between the two players. The losing same-pile candidate is
 rejected as `stale_move`.
 
 Nakama rejects a submitted move with `player_disconnected` unless both
@@ -193,7 +213,7 @@ Flutter handles opcode `13` as an authoritative state replacement.
 4. A version mismatch does not automatically reject the move.
 5. The server validates the card against the current target-pile top before
    queueing it.
-6. Valid candidates wait in the 150ms fairness window.
+6. Valid candidates wait in the adaptive fairness window.
 7. When the window is processed, the server revalidates each ready candidate
    against the current target-pile top.
 8. A batch of one or more accepted moves increments `stateVersion` once.
@@ -201,8 +221,8 @@ Flutter handles opcode `13` as an authoritative state replacement.
 
 This permits a valid move when an opponent changed only the other center pile.
 It also lets two players who reacted to the same visible state compete fairly
-inside the short server-side window instead of making raw network arrival order
-the only deciding factor.
+inside the server-side window, resolving contested piles by reaction-adjusted
+response time instead of making raw network arrival order the deciding factor.
 
 Presence-only changes do not increment `stateVersion`. Connecting or
 disconnecting does not move cards and must not make a submitted gameplay move

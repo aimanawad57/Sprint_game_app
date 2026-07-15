@@ -16,6 +16,22 @@ void main() {
     });
   });
 
+  test('SubmitMovePayload includes the reaction time when measured', () {
+    const payload = SubmitMovePayload(
+      cardId: 'card_017',
+      targetPileId: GamePileId.pile2,
+      expectedStateVersion: 8,
+      reactionTimeMs: 240,
+    );
+
+    expect(payload.toJson(), {
+      'card_id': 'card_017',
+      'targetPileId': 'pile_2',
+      'expectedStateVersion': 8,
+      'reactionTimeMs': 240,
+    });
+  });
+
   test('MoveRejectedView parses every stable rejection reason', () {
     for (final reason in MoveRejectionReason.values) {
       final rejection = MoveRejectedView.fromJson({

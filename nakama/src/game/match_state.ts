@@ -19,6 +19,10 @@ type PlayerMatchState = {
   deck: Card[];
   connected: boolean;
   disconnectedAtMs: number | null;
+  // Network round-trip estimate (ms) derived from this player's own moves:
+  // receivedAt - lastBroadcastAt - reactionTime. Used to size the fairness
+  // window adaptively. Null until the first timeable move is observed.
+  rttEstimateMs: number | null;
 };
 
 type SprintMatchState = {
@@ -38,6 +42,10 @@ type SprintMatchState = {
   resultPersistencePending: boolean;
   resultPersisted: boolean;
   matchCode: string | null;
+  // Server-clock timestamp of the most recent full-state broadcast. Anchors
+  // reaction-time fairness: a move's client-reported reaction time is added
+  // to this to reconstruct when the player actually reacted.
+  lastBroadcastAtMs: number | null;
   pendingMoves: ValidatedSubmitMove[];
   nextPendingMoveSequence: number;
   nextTieBreakerPlayerId: string | null;
