@@ -1104,22 +1104,34 @@ test("reaction compensation only applies to moves responding to the current stat
   assert.equal(staleVersionMove.networkRttEstimateMs, null);
 });
 
-test("the fairness window is sized adaptively from measured RTT", () => {
+test("the fairness window is sized adaptively from the RTT gap between players", () => {
   const state = createInitializedState(runtime);
 
-  // No measurement yet: fall back to the default window.
+  // No measurements yet: fall back to the default window.
   assert.equal(runtime.computeFairnessWindowMs(state), runtime.moveFairnessWindowMs);
 
-  // Two low-latency players: max(RTT)/2 floors at the minimum (100ms).
+  // Only one player measured yet: a gap needs two data points, so still
+  // fall back to the default window.
   state.players["player-a"].rttEstimateMs = 30;
+  assert.equal(runtime.computeFairnessWindowMs(state), runtime.moveFairnessWindowMs);
+
+  // Two low-latency players with a small gap: (40-30)/2 floors at the
+  // minimum (100ms).
   state.players["player-b"].rttEstimateMs = 40;
   assert.equal(runtime.computeFairnessWindowMs(state), 100);
 
-  // A real latency gap widens the window to max(RTT)/2 = 200ms.
-  state.players["player-b"].rttEstimateMs = 400;
-  assert.equal(runtime.computeFairnessWindowMs(state), 200);
+  // Both players equally (and highly) latent: no gap between them means no
+  // compensation is needed, regardless of how high the shared latency is.
+  state.players["player-a"].rttEstimateMs = 500;
+  state.players["player-b"].rttEstimateMs = 500;
+  assert.equal(runtime.computeFairnessWindowMs(state), 100);
 
-  // Very high latency is capped at the maximum (300ms).
+  // A real latency gap widens the window to (400-30)/2 = 185ms.
+  state.players["player-a"].rttEstimateMs = 30;
+  state.players["player-b"].rttEstimateMs = 400;
+  assert.equal(runtime.computeFairnessWindowMs(state), 185);
+
+  // A very large gap is capped at the maximum (300ms).
   state.players["player-b"].rttEstimateMs = 900;
   assert.equal(runtime.computeFairnessWindowMs(state), 300);
 });

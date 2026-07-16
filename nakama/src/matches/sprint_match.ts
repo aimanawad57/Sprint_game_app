@@ -2,9 +2,12 @@ const invalidMatchParametersMessage =
   "expectedUserIds must contain exactly two distinct, non-empty user IDs";
 const unauthorizedJoinMessage = "This user was not assigned to this match.";
 const disconnectTimeoutMs = 30 * 1000;
-// Fairness resolution window. Sized adaptively per match from the players'
-// measured RTT (max(RTT)/2, clamped to [min, max]); moveFairnessWindowMs is
-// the fallback used until an RTT estimate exists.
+// Fairness resolution window. Sized adaptively per match from the *gap*
+// between the players' measured RTT ((max - min) / 2, clamped to [min,
+// max]) — two equally-latent players need no compensation regardless of how
+// high that shared latency is, only a real difference between them does.
+// moveFairnessWindowMs is the fallback used until both players have an RTT
+// estimate.
 const moveFairnessWindowMs = 150;
 const minFairnessWindowMs = 100;
 const maxFairnessWindowMs = 300;
@@ -405,11 +408,14 @@ function enqueuePendingSubmitMove(
   return null;
 }
 
-// Sizes the resolution window from the two players' measured RTT: two
-// low-latency players resolve near-instantly (window floors at min), while a
-// real latency gap gets a wider window so the slower player's move can still
-// arrive and be compared fairly. max(RTT)/2, clamped to [min, max]. Falls
-// back to the default until any RTT estimate exists.
+// Sizes the resolution window from the *gap* between the two players'
+// measured RTT, not their absolute latency: two equally slow connections
+// resolve near-instantly (window floors at min), since neither player has a
+// network advantage over the other to compensate for, while a real
+// difference between them widens the window so the slower player's move can
+// still arrive and be compared fairly. (max(RTT) - min(RTT)) / 2, clamped to
+// [min, max]. Falls back to the default until both players have an RTT
+// estimate — a gap needs two data points.
 function computeFairnessWindowMs(state: SprintMatchState): number {
   const estimates: number[] = [];
   state.playerOrder.forEach((userId) => {
@@ -418,12 +424,13 @@ function computeFairnessWindowMs(state: SprintMatchState): number {
       estimates.push(rtt);
     }
   });
-  if (estimates.length === 0) {
+  if (estimates.length < 2) {
     return moveFairnessWindowMs;
   }
 
-  const maxRttMs = estimates.reduce((max, rtt) => Math.max(max, rtt), 0);
-  const windowMs = Math.round(maxRttMs / 2);
+  const maxRttMs = estimates.reduce((max, rtt) => Math.max(max, rtt), -Infinity);
+  const minRttMs = estimates.reduce((min, rtt) => Math.min(min, rtt), Infinity);
+  const windowMs = Math.round((maxRttMs - minRttMs) / 2);
   return Math.min(maxFairnessWindowMs, Math.max(minFairnessWindowMs, windowMs));
 }
 
@@ -643,7 +650,7 @@ function sprintMatchInit(
 
     return {
       state: createOpenWaitingMatchState(creatorId, code, nowMs),
-      tickRate: 10,
+      tickRate: 30,
       label: JSON.stringify({mode: "sprint_by_code"})
     };
   }
@@ -661,7 +668,7 @@ function sprintMatchInit(
 
   return {
     state: createWaitingMatchState(playerOrder, nowMs),
-    tickRate: 10,
+    tickRate: 30,
     label: JSON.stringify({
       mode: "sprint_quickplay",
       expectedPlayers: playerOrder.length
