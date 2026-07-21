@@ -29,6 +29,9 @@ class GameStatePanel extends StatefulWidget {
     this.feedbackMessage,
     this.movesEnabled = true,
     this.connectionMessage,
+    this.coachingMessage,
+    this.highlightedCardIds = const <String>{},
+    this.highlightedPileIds = const <GamePileId>{},
   });
 
   final GameStateView gameState;
@@ -40,6 +43,9 @@ class GameStatePanel extends StatefulWidget {
   final String? feedbackMessage;
   final bool movesEnabled;
   final String? connectionMessage;
+  final String? coachingMessage;
+  final Set<String> highlightedCardIds;
+  final Set<GamePileId> highlightedPileIds;
 
   @override
   State<GameStatePanel> createState() => _GameStatePanelState();
@@ -83,13 +89,15 @@ class _GameStatePanelState extends State<GameStatePanel> {
     final gameState = widget.gameState;
     final gameFinished = gameState.status == GameMatchStatus.finished;
     final resultMessage = _finishedResultMessage(gameState);
-    final instruction = gameFinished
-        ? 'The match has ended. Move controls are disabled.'
-        : !widget.movesEnabled
-        ? 'Moves are paused until both players are connected.'
-        : _selectedCardId == null
-        ? 'Select one of your cards, then select a center pile.'
-        : 'Now select the center pile where you want to play it.';
+    final instruction =
+        widget.coachingMessage ??
+        (gameFinished
+            ? 'The match has ended. Move controls are disabled.'
+            : !widget.movesEnabled
+            ? 'Moves are paused until both players are connected.'
+            : _selectedCardId == null
+            ? 'Select one of your cards, then select a center pile.'
+            : 'Now select the center pile where you want to play it.');
 
     return ColoredBox(
       color: _sprintLavender,
@@ -134,6 +142,9 @@ class _GameStatePanelState extends State<GameStatePanel> {
                       key: const ValueKey('centerPile1'),
                       label: 'Pile 1',
                       topCard: gameState.pile1.topCard,
+                      highlighted: widget.highlightedPileIds.contains(
+                        GamePileId.pile1,
+                      ),
                       onTap: _canPlay && _selectedCardId != null
                           ? () => _submitToPile(GamePileId.pile1)
                           : null,
@@ -142,6 +153,9 @@ class _GameStatePanelState extends State<GameStatePanel> {
                       key: const ValueKey('centerPile2'),
                       label: 'Pile 2',
                       topCard: gameState.pile2.topCard,
+                      highlighted: widget.highlightedPileIds.contains(
+                        GamePileId.pile2,
+                      ),
                       onTap: _canPlay && _selectedCardId != null
                           ? () => _submitToPile(GamePileId.pile2)
                           : null,
@@ -153,6 +167,7 @@ class _GameStatePanelState extends State<GameStatePanel> {
                   hand: gameState.myHand,
                   deckCount: gameState.myDeckCount,
                   selectedCardId: _selectedCardId,
+                  highlightedCardIds: widget.highlightedCardIds,
                   onSelectCard: _canPlay ? _selectCard : null,
                 ),
                 if (widget.isSubmitting) ...[
@@ -377,12 +392,14 @@ class _PlayerLane extends StatelessWidget {
     required this.hand,
     required this.deckCount,
     required this.selectedCardId,
+    required this.highlightedCardIds,
     required this.onSelectCard,
   });
 
   final List<GameCard> hand;
   final int deckCount;
   final String? selectedCardId;
+  final Set<String> highlightedCardIds;
   final ValueChanged<String>? onSelectCard;
 
   @override
@@ -394,6 +411,7 @@ class _PlayerLane extends StatelessWidget {
         hand: hand,
         deckCount: deckCount,
         selectedCardId: selectedCardId,
+        highlightedCardIds: highlightedCardIds,
         onSelectCard: onSelectCard,
       ),
     );
@@ -593,11 +611,13 @@ class _PileStack extends StatelessWidget {
     super.key,
     required this.label,
     required this.topCard,
+    this.highlighted = false,
     this.onTap,
   });
 
   final String label;
   final GameCard topCard;
+  final bool highlighted;
   final VoidCallback? onTap;
 
   @override
@@ -605,48 +625,56 @@ class _PileStack extends StatelessWidget {
     const stackOffset = 4.0;
     final active = onTap != null;
 
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(18),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: active
-              ? _sprintYellow.withValues(alpha: 0.22)
-              : Colors.white.withValues(alpha: 0.36),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: active ? _sprintBlue : _sprintBlue.withValues(alpha: 0.18),
-            width: active ? 3 : 1.4,
+    return _AttentionPulse(
+      active: highlighted,
+      borderRadius: 20,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: active
+                ? _sprintYellow.withValues(alpha: 0.22)
+                : Colors.white.withValues(alpha: 0.36),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: active ? _sprintBlue : _sprintBlue.withValues(alpha: 0.18),
+              width: active ? 3 : 1.4,
+            ),
           ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              label,
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: _sprintBlue,
-                fontWeight: FontWeight.w900,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: _sprintBlue,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
-            ),
-            const SizedBox(height: 7),
-            SizedBox(
-              width: _cardWidth + stackOffset * 1.5,
-              height: _cardHeight + stackOffset * 1.5,
-              child: Stack(
-                children: [
-                  const Positioned(
-                    left: stackOffset,
-                    top: stackOffset,
-                    child: _CardBack(),
-                  ),
-                  Positioned(left: 0, top: 0, child: _CardFront(card: topCard)),
-                ],
+              const SizedBox(height: 7),
+              SizedBox(
+                width: _cardWidth + stackOffset * 1.5,
+                height: _cardHeight + stackOffset * 1.5,
+                child: Stack(
+                  children: [
+                    const Positioned(
+                      left: stackOffset,
+                      top: stackOffset,
+                      child: _CardBack(),
+                    ),
+                    Positioned(
+                      left: 0,
+                      top: 0,
+                      child: _CardFront(card: topCard),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -670,12 +698,14 @@ class _HandRow extends StatelessWidget {
     required this.hand,
     required this.deckCount,
     required this.selectedCardId,
+    required this.highlightedCardIds,
     required this.onSelectCard,
   });
 
   final List<GameCard> hand;
   final int deckCount;
   final String? selectedCardId;
+  final Set<String> highlightedCardIds;
   final ValueChanged<String>? onSelectCard;
 
   @override
@@ -696,6 +726,7 @@ class _HandRow extends StatelessWidget {
                 width: cardSize.width,
                 height: cardSize.height,
                 selected: card.cardId == selectedCardId,
+                highlighted: highlightedCardIds.contains(card.cardId),
                 onTap: onSelectCard == null
                     ? null
                     : () => onSelectCard!(card.cardId),
@@ -758,6 +789,7 @@ class _HandCardTile extends StatelessWidget {
     super.key,
     required this.card,
     this.selected = false,
+    this.highlighted = false,
     this.onTap,
     this.width = _cardWidth,
     this.height = _cardHeight,
@@ -765,56 +797,145 @@ class _HandCardTile extends StatelessWidget {
 
   final GameCard card;
   final bool selected;
+  final bool highlighted;
   final VoidCallback? onTap;
   final double width;
   final double height;
 
   @override
   Widget build(BuildContext context) {
-    return Transform.translate(
-      offset: selected ? const Offset(0, -10) : Offset.zero,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 170),
-          width: width,
-          height: height,
-          padding: EdgeInsets.all(selected ? 3 : 2),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: selected
-                  ? [_sprintYellow, _sprintOrange]
-                  : [
-                      Colors.white.withValues(alpha: 0.88),
-                      _sprintLavenderDeep.withValues(alpha: 0.7),
-                    ],
+    return _AttentionPulse(
+      active: highlighted && !selected,
+      borderRadius: 20,
+      child: Transform.translate(
+        offset: selected ? const Offset(0, -10) : Offset.zero,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 170),
+            width: width,
+            height: height,
+            padding: EdgeInsets.all(selected ? 3 : 2),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: selected
+                    ? [_sprintYellow, _sprintOrange]
+                    : [
+                        Colors.white.withValues(alpha: 0.88),
+                        _sprintLavenderDeep.withValues(alpha: 0.7),
+                      ],
+              ),
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: [
+                if (selected)
+                  BoxShadow(
+                    color: _sprintYellow.withValues(alpha: 0.48),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+              ],
             ),
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: [
-              if (selected)
-                BoxShadow(
-                  color: _sprintYellow.withValues(alpha: 0.48),
-                  blurRadius: 20,
-                  offset: const Offset(0, 10),
-                ),
-            ],
-          ),
-          child: Stack(
-            children: [
-              _CardFront(card: card, width: width - 6, height: height - 6),
-              if (selected)
-                const Positioned(
-                  top: 6,
-                  right: 6,
-                  child: Icon(Icons.check_circle, color: _sprintBlue, size: 18),
-                ),
-            ],
+            child: Stack(
+              children: [
+                _CardFront(card: card, width: width - 6, height: height - 6),
+                if (selected)
+                  const Positioned(
+                    top: 6,
+                    right: 6,
+                    child: Icon(
+                      Icons.check_circle,
+                      color: _sprintBlue,
+                      size: 18,
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _AttentionPulse extends StatefulWidget {
+  const _AttentionPulse({
+    required this.active,
+    required this.child,
+    this.borderRadius = 18,
+  });
+
+  final bool active;
+  final Widget child;
+  final double borderRadius;
+
+  @override
+  State<_AttentionPulse> createState() => _AttentionPulseState();
+}
+
+class _AttentionPulseState extends State<_AttentionPulse>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    if (widget.active) _controller.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AttentionPulse oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) {
+      _controller.repeat(reverse: true);
+    } else if (!widget.active && oldWidget.active) {
+      _controller
+        ..stop()
+        ..value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.active) return widget.child;
+    return AnimatedBuilder(
+      animation: _controller,
+      child: widget.child,
+      builder: (context, child) {
+        final value = Curves.easeInOut.transform(_controller.value);
+        return Transform.scale(
+          scale: 1 + value * 0.025,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(widget.borderRadius),
+              border: Border.all(
+                color: Color.lerp(_sprintYellow, _sprintOrange, value)!,
+                width: 3,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: _sprintYellow.withValues(alpha: 0.28 + value * 0.25),
+                  blurRadius: 12 + value * 14,
+                  spreadRadius: value * 3,
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        );
+      },
     );
   }
 }

@@ -40,6 +40,8 @@ function loadRuntimeForTest() {
     "writeSprintWinsLeaderboardRecord," +
     "rpcGetWinsLeaderboard," +
     "rpcGetOrCreateProfile," +
+    "rpcGetOnboardingProgress," +
+    "rpcMergeOnboardingProgress," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
     "sprintMatchLeave," +
@@ -114,6 +116,19 @@ function seededRandom(seed) {
   return () => {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
     return state / 0x100000000;
+  };
+}
+
+function onboardingStorage(initialValue) {
+  let stored = initialValue ? {value: initialValue, version: "v1"} : undefined;
+  return {
+    nk: {
+      storageRead() { return stored ? [stored] : []; },
+      storageWrite(writes) {
+        stored = {value: writes[0].value, version: "v2"};
+      }
+    },
+    value() { return stored && stored.value; }
   };
 }
 
@@ -2472,4 +2487,49 @@ test("game-ended view is sent before statistics persist on the following tick", 
   runtime.sprintMatchLoop(null, logger, nk, dispatcher, 3, state, []);
   assert.equal(profileWrites, 1);
   assert.equal(state.resultPersisted, true);
+});
+
+test("onboarding read returns zero defaults for a new account", () => {
+  const storage = onboardingStorage();
+  const result = JSON.parse(runtime.rpcGetOnboardingProgress(
+    {userId: "player-a"}, {debug() {}}, storage.nk, ""
+  ));
+  assert.deepEqual(normalize(result), {
+    tutorialCompletedVersion: 0,
+    firstPracticeCompletedVersion: 0,
+    tutorialPromptDismissedVersion: 0
+  });
+});
+
+test("onboarding merge is monotonic independently for all fields", () => {
+  const storage = onboardingStorage({
+    tutorialCompletedVersion: 2,
+    firstPracticeCompletedVersion: 0,
+    tutorialPromptDismissedVersion: 1
+  });
+  const result = JSON.parse(runtime.rpcMergeOnboardingProgress(
+    {userId: "player-a"}, {debug() {}}, storage.nk,
+    JSON.stringify({
+      tutorialCompletedVersion: 1,
+      firstPracticeCompletedVersion: 3,
+      tutorialPromptDismissedVersion: 2
+    })
+  ));
+  assert.deepEqual(normalize(result), {
+    tutorialCompletedVersion: 2,
+    firstPracticeCompletedVersion: 3,
+    tutorialPromptDismissedVersion: 2
+  });
+  assert.deepEqual(normalize(storage.value()), normalize(result));
+});
+
+test("onboarding merge rejects unknown and invalid versions", () => {
+  const storage = onboardingStorage();
+  assert.throws(() => runtime.rpcMergeOnboardingProgress(
+    {userId: "player-a"}, {debug() {}}, storage.nk, '{"unknown":1}'
+  ), /Unknown onboarding field/);
+  assert.throws(() => runtime.rpcMergeOnboardingProgress(
+    {userId: "player-a"}, {debug() {}}, storage.nk,
+    '{"tutorialCompletedVersion":-1}'
+  ), /must be an integer/);
 });

@@ -8,6 +8,7 @@ import '../config/game_protocol.dart';
 import '../models/created_match_by_code.dart';
 import '../models/game/game_move.dart';
 import '../models/leaderboard_entry.dart';
+import '../models/onboarding_progress.dart';
 import '../models/player_profile.dart';
 
 class NakamaService {
@@ -189,6 +190,39 @@ class NakamaService {
     return PlayerProfile.fromJson(json);
   }
 
+  Future<OnboardingProgress> loadOnboardingProgress(
+    nakama.Session session,
+  ) async {
+    final response = await client.rpc(
+      session: session,
+      id: 'get_onboarding_progress',
+      payload: '',
+    );
+    if (response == null) {
+      throw Exception('The server did not return onboarding progress.');
+    }
+    return OnboardingProgress.fromJson(
+      Map<String, dynamic>.from(jsonDecode(response) as Map),
+    );
+  }
+
+  Future<OnboardingProgress> mergeOnboardingProgress(
+    nakama.Session session,
+    OnboardingProgress progress,
+  ) async {
+    final response = await client.rpc(
+      session: session,
+      id: 'merge_onboarding_progress',
+      payload: jsonEncode(progress.toJson()),
+    );
+    if (response == null) {
+      throw Exception('The server did not merge onboarding progress.');
+    }
+    return OnboardingProgress.fromJson(
+      Map<String, dynamic>.from(jsonDecode(response) as Map),
+    );
+  }
+
   Future<List<LeaderboardEntry>> loadWinsLeaderboard(
     nakama.Session session, {
     int limit = 50,
@@ -204,7 +238,9 @@ class NakamaService {
 
     final json = jsonDecode(response) as List<dynamic>;
     return json
-        .map((entry) => LeaderboardEntry.fromJson(entry as Map<String, dynamic>))
+        .map(
+          (entry) => LeaderboardEntry.fromJson(entry as Map<String, dynamic>),
+        )
         .toList();
   }
 }

@@ -5,6 +5,7 @@ import 'package:nakama/nakama.dart' as nakama;
 import '../models/player_profile.dart';
 import '../models/play_exit_action.dart';
 import '../services/nakama_service.dart';
+import '../services/onboarding_progress_repository.dart';
 import '../widgets/backend_status_panel.dart';
 import '../widgets/disconnected_match_banner.dart';
 import 'create_join_match_screen.dart';
@@ -39,10 +40,15 @@ class _MainPageState extends State<MainPage> {
   PlayerProfile? _playerProfile;
   String? _resumableMatchId;
   bool _isAbandoningMatch = false;
+  late final OnboardingProgressRepository _onboardingRepository;
 
   @override
   void initState() {
     super.initState();
+    _onboardingRepository = OnboardingProgressRepository(
+      nakamaService: widget.nakamaService,
+      session: widget.nakamaSession,
+    );
     _checkBackend();
     _loadOrCreatePlayerProfile();
   }
@@ -50,6 +56,7 @@ class _MainPageState extends State<MainPage> {
   Future<void> _checkBackend() async {
     try {
       await widget.nakamaService.checkBackend(widget.nakamaSession);
+      await _onboardingRepository.synchronize();
 
       if (!mounted) return;
       setState(() {
@@ -161,9 +168,9 @@ class _MainPageState extends State<MainPage> {
       await Future<void>.delayed(const Duration(milliseconds: 500));
       await _loadOrCreatePlayerProfile();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Match abandoned.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Match abandoned.')));
     } catch (error) {
       debugPrint('Could not abandon match: $error');
       if (!mounted) return;

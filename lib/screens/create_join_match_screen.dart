@@ -3,7 +3,11 @@ import 'package:nakama/nakama.dart' as nakama;
 
 import '../models/play_exit_action.dart';
 import '../services/nakama_service.dart';
+import '../models/onboarding_progress.dart';
+import '../services/onboarding_progress_repository.dart';
 import 'play_page.dart';
+import 'practice_page.dart';
+import 'tutorial_page.dart';
 
 class CreateJoinMatchScreen extends StatefulWidget {
   const CreateJoinMatchScreen({
@@ -23,6 +27,133 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
   final _codeController = TextEditingController();
   bool _isCreating = false;
   bool _isJoining = false;
+  late final OnboardingProgressRepository _onboardingRepository;
+  OnboardingProgress _onboardingProgress = const OnboardingProgress();
+  bool _recommendationChecked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _onboardingRepository = OnboardingProgressRepository(
+      nakamaService: widget.nakamaService,
+      session: widget.nakamaSession,
+    );
+    _loadOnboarding();
+  }
+
+  Future<void> _loadOnboarding() async {
+    final cached = await _onboardingRepository.readCached();
+    if (mounted) setState(() => _onboardingProgress = cached);
+    final progress = await _onboardingRepository.synchronize();
+    if (!mounted) return;
+    setState(() => _onboardingProgress = progress);
+    if (!_recommendationChecked && progress.shouldRecommendTutorial) {
+      _recommendationChecked = true;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _showTutorialRecommendation(),
+      );
+    }
+  }
+
+  Future<void> _showTutorialRecommendation() async {
+    if (!mounted) return;
+    final start = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('New to Sprint?'),
+        content: const Text(
+          'Learn matching, both center piles, automatic drawing, stuck resets, and speed—then practice against a bot.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Start Tutorial'),
+          ),
+        ],
+      ),
+    );
+    if (start == true) {
+      await _openTutorial();
+    } else if (start == false) {
+      final progress = await _onboardingRepository.update(
+        (value) => value.dismissTutorialPrompt(),
+      );
+      if (mounted) setState(() => _onboardingProgress = progress);
+    }
+  }
+
+  Future<void> _openTutorial() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TutorialPage(repository: _onboardingRepository),
+      ),
+    );
+    final progress = await _onboardingRepository.synchronize();
+    if (mounted) setState(() => _onboardingProgress = progress);
+  }
+
+  Future<void> _openPractice() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PracticePage(repository: _onboardingRepository),
+      ),
+    );
+    final progress = await _onboardingRepository.synchronize();
+    if (mounted) setState(() => _onboardingProgress = progress);
+  }
+
+  Future<void> _openLearningMenu() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Learn at your pace',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Both modes are on-device and never affect competitive stats.',
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.pop(sheetContext);
+                  _openTutorial();
+                },
+                icon: const Icon(Icons.school),
+                label: Text(
+                  _onboardingProgress.tutorialCompletedVersion >=
+                          currentTutorialVersion
+                      ? 'Replay Tutorial'
+                      : 'Start Tutorial',
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(sheetContext);
+                  _openPractice();
+                },
+                icon: const Icon(Icons.smart_toy),
+                label: const Text('Practice vs Bot'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -141,6 +272,13 @@ class _CreateJoinMatchScreenState extends State<CreateJoinMatchScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              FilledButton.icon(
+                key: const ValueKey('tutorialPracticeButton'),
+                onPressed: _openLearningMenu,
+                icon: const Icon(Icons.school),
+                label: const Text('Tutorial & Practice'),
+              ),
+              const SizedBox(height: 12),
               FilledButton.icon(
                 onPressed: _openQuickMatch,
                 icon: const Icon(Icons.bolt),

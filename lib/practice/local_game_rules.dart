@@ -1,0 +1,123 @@
+import 'dart:math';
+
+import '../models/game/game_card.dart';
+import '../models/game/game_move.dart';
+
+bool cardsMatch(GameCard played, GameCard top) =>
+    played.color == top.color ||
+    played.shape == top.shape ||
+    played.count == top.count;
+
+List<GamePileId> legalTargets(GameCard card, GameCard pile1, GameCard pile2) =>
+    [
+      if (cardsMatch(card, pile1)) GamePileId.pile1,
+      if (cardsMatch(card, pile2)) GamePileId.pile2,
+    ];
+
+bool handHasLegalMove(
+  Iterable<GameCard> hand,
+  GameCard pile1,
+  GameCard pile2,
+) => hand.any((card) => legalTargets(card, pile1, pile2).isNotEmpty);
+
+GameCard? drawReplacement(List<GameCard> deck, List<GameCard> hand) {
+  if (deck.isEmpty) return null;
+  final card = deck.removeLast();
+  hand.add(card);
+  return card;
+}
+
+bool playerHasWon(List<GameCard> deck, List<GameCard> hand) =>
+    deck.isEmpty && hand.isEmpty;
+
+List<GameCard> shuffledCards(List<GameCard> cards, Random random) {
+  final result = List<GameCard>.of(cards);
+  for (var i = result.length - 1; i > 0; i--) {
+    final j = random.nextInt(i + 1);
+    final value = result[i];
+    result[i] = result[j];
+    result[j] = value;
+  }
+  return result;
+}
+
+final List<GameCard> sprintCardCatalog = _parseCatalog(_catalogData);
+
+List<GameCard> _parseCatalog(String data) {
+  final cards = <GameCard>[];
+  for (final row in data.trim().split('\n')) {
+    final fields = row.trim().split(',');
+    cards.add(
+      GameCard(
+        cardId: fields[0],
+        color: GameCardColor.values.byName(fields[1]),
+        shape: GameCardShape.values.byName(fields[2]),
+        count: int.parse(fields[3]),
+      ),
+    );
+  }
+  return List.unmodifiable(cards);
+}
+
+const _catalogData = '''
+card_001,yellow,tree,2
+card_002,yellow,diamond,2
+card_003,yellow,diamond,4
+card_004,yellow,circle,4
+card_005,yellow,star,3
+card_006,yellow,circle,3
+card_007,yellow,star,1
+card_008,yellow,tree,1
+card_009,yellow,house,5
+card_010,yellow,flag,5
+card_011,yellow,flag,5
+card_012,red,star,2
+card_013,red,tree,4
+card_014,red,house,4
+card_015,red,circle,1
+card_016,red,circle,3
+card_017,red,flag,1
+card_018,red,diamond,2
+card_019,red,tree,3
+card_020,red,star,4
+card_021,purple,house,4
+card_022,purple,star,1
+card_023,purple,star,5
+card_024,purple,diamond,3
+card_025,purple,flag,2
+card_026,purple,diamond,1
+card_027,purple,flag,4
+card_028,purple,tree,3
+card_029,purple,circle,5
+card_030,purple,circle,2
+card_031,blue,circle,1
+card_032,blue,tree,5
+card_033,blue,tree,2
+card_034,blue,house,1
+card_035,blue,star,4
+card_036,blue,flag,4
+card_037,blue,star,2
+card_038,blue,diamond,5
+card_039,blue,diamond,3
+card_040,blue,house,3
+card_041,orange,diamond,1
+card_042,orange,tree,4
+card_043,orange,flag,2
+card_044,orange,house,2
+card_045,orange,star,4
+card_046,orange,diamond,5
+card_047,orange,flag,3
+card_048,orange,house,3
+card_049,orange,tree,1
+card_050,orange,circle,5
+card_051,green,circle,2
+card_052,green,diamond,4
+card_053,green,house,5
+card_054,green,circle,4
+card_055,green,tree,5
+card_056,green,tree,1
+card_057,green,house,2
+card_058,green,flag,3
+card_059,green,flag,1
+card_060,green,star,3
+''';
