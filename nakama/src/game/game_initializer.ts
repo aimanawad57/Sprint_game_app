@@ -183,8 +183,8 @@ function initializeRematchRound(
     state.status !== MatchStatus.Finished ||
     !state.resultPersisted ||
     state.resultPersistencePending ||
-    state.rematchStartsAtMs === null ||
-    nowMs < state.rematchStartsAtMs ||
+    state.roundStartsAtMs === null ||
+    nowMs < state.roundStartsAtMs ||
     !bothPlayersConnected(state) ||
     !state.playerOrder.every(
       (userId) => state.rematchResponses[userId] === "accepted"
@@ -217,7 +217,8 @@ function initializeRematchRound(
   state.finishedEmptySinceMs = null;
   state.roundNumber += 1;
   state.rematchRequestedAtMs = null;
-  state.rematchStartsAtMs = null;
+  state.roundStartsAtMs = null;
+  state.rematchPhase = "idle";
   state.rematchExpired = false;
   state.rematchUnavailable = false;
   state.playerOrder.forEach((userId) => {

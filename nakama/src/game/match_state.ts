@@ -13,6 +13,14 @@ enum MatchEndReason {
 }
 
 type RematchResponse = "pending" | "accepted" | "declined";
+type RematchPhase =
+  | "idle"
+  | "requested"
+  | "awaiting_persistence"
+  | "countdown"
+  | "declined"
+  | "expired"
+  | "unavailable";
 
 type PlayerMatchState = {
   userId: string;
@@ -30,8 +38,9 @@ type PlayerMatchState = {
 type SprintMatchState = {
   roundNumber: number;
   rematchResponses: {[userId: string]: RematchResponse};
+  rematchPhase: RematchPhase;
   rematchRequestedAtMs: number | null;
-  rematchStartsAtMs: number | null;
+  roundStartsAtMs: number | null;
   rematchExpired: boolean;
   rematchUnavailable: boolean;
   status: MatchStatus;

@@ -355,19 +355,18 @@ test("match lifecycle sends connection changes before private matchStarted event
   runtime.sprintMatchJoin(null, logger, null, dispatcher, 2, state, [presenceB]);
   assert.equal(state.status, runtime.MatchStatus.Waiting);
   assert.equal(state.stateVersion, 0);
-  assert.notEqual(state.rematchStartsAtMs, null);
+  assert.notEqual(state.roundStartsAtMs, null);
   assert.deepEqual(calls.map((call) => call.opcode), [
     runtime.ServerOpcode.ConnectionChanged,
     runtime.ServerOpcode.ConnectionChanged,
     runtime.ServerOpcode.RematchStatus,
   ]);
-  assert.deepEqual(calls[2].data, {
-    status: "starting",
-    roundNumber: 1,
-    startsInMs: 5000,
-  });
+  assert.equal(calls[2].data.status, "starting");
+  assert.equal(calls[2].data.roundNumber, 1);
+  assert.equal(calls[2].data.startsInMs, 5000);
+  assert.equal(calls[2].data.startsAtMs - calls[2].data.serverTimeMs, 5000);
 
-  state.rematchStartsAtMs = Date.now() - 1;
+  state.roundStartsAtMs = Date.now() - 1;
   runtime.sprintMatchLoop(null, logger, null, dispatcher, 3, state, []);
   assert.equal(state.status, runtime.MatchStatus.Active);
   assert.equal(state.stateVersion, 1);
@@ -455,12 +454,42 @@ test("player views use account display names instead of generated presence usern
   assert.equal(state.players["player-a"].displayName, "Mohammed");
   assert.equal(state.players["player-b"].displayName, "Aiman");
 
-  state.rematchStartsAtMs = Date.now() - 1;
+  state.roundStartsAtMs = Date.now() - 1;
   runtime.sprintMatchLoop(null, logger, nk, dispatcher, 2, state, []);
   state.status = runtime.MatchStatus.Finished;
   state.winnerId = "player-a";
   const view = runtime.buildPlayerStateView(state, "player-b");
   assert.equal(view.winnerName, "Mohammed");
+});
+
+test("a player rejoining the initial countdown receives its remaining deadline", () => {
+  const state = runtime.createWaitingMatchState(["player-a", "player-b"]);
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data, presences) {
+      calls.push({opcode, data: JSON.parse(data), presences});
+    },
+  };
+  const logger = {info() {}, warn() {}, error() {}};
+  const presenceA = {userId: "player-a", sessionId: "session-a"};
+  const presenceB = {userId: "player-b", sessionId: "session-b"};
+
+  runtime.sprintMatchJoin(null, logger, null, dispatcher, 1, state, [
+    presenceA,
+    presenceB,
+  ]);
+  const originalDeadline = state.roundStartsAtMs;
+  runtime.sprintMatchLeave(null, logger, null, dispatcher, 2, state, [presenceB]);
+
+  const rejoinedB = {userId: "player-b", sessionId: "session-b-new"};
+  runtime.sprintMatchJoin(null, logger, null, dispatcher, 3, state, [rejoinedB]);
+
+  const countdown = calls.at(-1);
+  assert.equal(countdown.opcode, runtime.ServerOpcode.RematchStatus);
+  assert.equal(countdown.data.status, "starting");
+  assert.equal(countdown.data.startsAtMs, originalDeadline);
+  assert.equal(countdown.presences.length, 1);
+  assert.strictEqual(countdown.presences[0], rejoinedB);
 });
 
 test("reconnection replaces the presence and ignores a delayed old-session leave", () => {
@@ -1580,6 +1609,89 @@ test("two rematch acceptances start exactly one fresh round", () => {
   assert.equal(state.pendingMoves.length, 0);
   assertCardConservation(state);
   assert.equal(runtime.initializeRematchRound(state, seededRandom(3), 8003), false);
+});
+
+test("rematch countdown waits for result persistence", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Normal;
+  state.resultPersistencePending = true;
+  state.resultPersisted = false;
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data) {
+      calls.push({opcode, data: JSON.parse(data)});
+    }
+  };
+
+  runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-a"],
+    JSON.stringify({accept: true}), 3000
+  );
+  runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-b"],
+    JSON.stringify({accept: true}), 3001
+  );
+
+  assert.equal(state.rematchPhase, "awaiting_persistence");
+  assert.equal(state.roundStartsAtMs, null);
+  assert.equal(calls.at(-1).data.status, "preparing");
+
+  state.resultPersistencePending = false;
+  state.resultPersisted = true;
+  runtime.sprintMatchLoop(
+    null, {info() {}, warn() {}, error() {}}, null, dispatcher, 1, state, []
+  );
+
+  assert.equal(state.rematchPhase, "countdown");
+  assert.notEqual(state.roundStartsAtMs, null);
+  assert.equal(calls.at(-1).data.status, "starting");
+  assert.equal(calls.at(-1).data.startsAtMs - calls.at(-1).data.serverTimeMs, 5000);
+});
+
+test("rematch decisions and expiry cannot change a started countdown", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Normal;
+  state.resultPersistencePending = false;
+  state.resultPersisted = true;
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data) {
+      calls.push({opcode, data: JSON.parse(data)});
+    }
+  };
+
+  runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-a"],
+    JSON.stringify({accept: true}), 1000
+  );
+  runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-b"],
+    JSON.stringify({accept: true}), 1001
+  );
+  const countdownStartsAtMs = state.roundStartsAtMs;
+  assert.equal(state.rematchPhase, "countdown");
+
+  assert.equal(runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-a"],
+    JSON.stringify({accept: false}), 1002
+  ), false);
+  state.rematchRequestedAtMs = Date.now() - runtime.rematchTimeoutMs - 1;
+  state.roundStartsAtMs = Date.now() + 60_000;
+  runtime.sprintMatchLoop(
+    null, {info() {}, warn() {}, error() {}}, null, dispatcher, 1, state, []
+  );
+
+  assert.equal(state.rematchPhase, "countdown");
+  assert.equal(state.rematchExpired, false);
+  assert.equal(
+    calls.filter((call) => call.data.status === "expired").length,
+    0
+  );
+  assert.notEqual(countdownStartsAtMs, null);
 });
 
 test("rematch decisions reject active matches, outsiders, and acceptance after decline", () => {

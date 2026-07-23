@@ -21,6 +21,7 @@ enum ServerOpcode {
 
 type RematchStatus =
   | "requested"
+  | "preparing"
   | "declined"
   | "expired"
   | "starting"
@@ -32,6 +33,8 @@ type RematchStatusPayload = {
   declinedBy?: string;
   expiresInMs?: number;
   startsInMs?: number;
+  startsAtMs?: number;
+  serverTimeMs?: number;
   roundNumber?: number;
 };
 

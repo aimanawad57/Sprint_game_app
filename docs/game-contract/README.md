@@ -30,7 +30,9 @@ renders the authoritative server state and submits player moves.
 - A version mismatch causes revalidation, not automatic rejection.
 - Presence-only connection changes do not increment the gameplay state version.
 - Initial dealing is complete when both expected players connect and establishes gameplay version `1`.
+- Every round starts from one authoritative server deadline; reconnecting
+  players receive the remaining countdown directly.
 - Reconnection never reshuffles, redeals, or restarts the current round;
   the rejoining player receives a targeted opcode `11` private state snapshot.
 - A mutually accepted rematch creates a fresh round inside the same authoritative
-  match and sends one new `matchStarted` event per player.
+  match after result persistence and sends one new `matchStarted` event per player.

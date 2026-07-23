@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
 import '../models/game/game_card.dart';
 import '../models/game/game_move.dart';
@@ -242,10 +243,14 @@ class RoundCountdownOverlay extends StatefulWidget {
   const RoundCountdownOverlay({
     super.key,
     required this.durationMs,
+    this.startsAtMs,
+    this.serverTimeMs,
     required this.roundNumber,
   });
 
   final int durationMs;
+  final int? startsAtMs;
+  final int? serverTimeMs;
   final int? roundNumber;
 
   @override
@@ -256,20 +261,54 @@ class _RoundCountdownOverlayState extends State<RoundCountdownOverlay>
     with SingleTickerProviderStateMixin {
   late final AnimationController _pulseController;
   Timer? _ticker;
+  late DateTime _deadline;
   late int _secondsRemaining;
 
   @override
   void initState() {
     super.initState();
-    _secondsRemaining = (widget.durationMs / 1000).ceil().clamp(1, 5);
+    _setDeadline();
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
-    )..repeat(reverse: true);
+    );
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _secondsRemaining == 0) return;
-      setState(() => _secondsRemaining -= 1);
+      final next = _secondsRemaining - 1;
+      if (next > 0 && next <= 3) {
+        unawaited(HapticFeedback.lightImpact());
+      } else if (next == 0) {
+        unawaited(HapticFeedback.mediumImpact());
+      }
+      setState(() => _secondsRemaining = next);
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant RoundCountdownOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.startsAtMs != widget.startsAtMs ||
+        oldWidget.serverTimeMs != widget.serverTimeMs ||
+        (widget.startsAtMs == null &&
+            oldWidget.durationMs != widget.durationMs)) {
+      _setDeadline();
+    }
+  }
+
+  void _setDeadline() {
+    final now = DateTime.now();
+    final startsAtMs = widget.startsAtMs;
+    final serverTimeMs = widget.serverTimeMs;
+    _deadline = startsAtMs == null
+        ? now.add(Duration(milliseconds: widget.durationMs))
+        : serverTimeMs == null
+        ? DateTime.fromMillisecondsSinceEpoch(startsAtMs)
+        : now.add(Duration(milliseconds: startsAtMs - serverTimeMs));
+    _secondsRemaining = _remainingSeconds(now);
+  }
+
+  int _remainingSeconds(DateTime now) {
+    return (_deadline.difference(now).inMilliseconds / 1000).ceil().clamp(0, 5);
   }
 
   @override
@@ -281,6 +320,14 @@ class _RoundCountdownOverlayState extends State<RoundCountdownOverlay>
 
   @override
   Widget build(BuildContext context) {
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (reduceMotion) {
+      _pulseController.stop();
+      _pulseController.value = 0.5;
+    } else if (!_pulseController.isAnimating) {
+      _pulseController.repeat(reverse: true);
+    }
     final pulse = CurvedAnimation(
       parent: _pulseController,
       curve: Curves.easeInOut,
@@ -288,104 +335,111 @@ class _RoundCountdownOverlayState extends State<RoundCountdownOverlay>
     final label = _secondsRemaining > 0 ? '$_secondsRemaining' : 'GO!';
     final isFirstRound = (widget.roundNumber ?? 1) <= 1;
 
-    return DecoratedBox(
-      key: ValueKey(
-        isFirstRound
-            ? 'initialCountdownBackground'
-            : 'rematchCountdownBackground',
-      ),
-      decoration: BoxDecoration(
-        color: isFirstRound ? null : _sprintBlue.withValues(alpha: 0.80),
-        gradient: isFirstRound
-            ? const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Color(0xFF171B63),
-                  Color(0xFF393DA5),
-                  Color(0xFF7565D8),
-                ],
-              )
-            : null,
-      ),
-      child: Stack(
-        children: [
-          if (isFirstRound)
-            const Positioned.fill(
-              child: CustomPaint(painter: _CountdownBackdropPainter()),
-            ),
-          Center(
-            child: AnimatedBuilder(
-              animation: pulse,
-              builder: (context, child) {
-                final value = pulse.value;
-                return Transform.scale(
-                  scale: 0.92 + value * 0.16,
-                  child: Container(
-                    key: const ValueKey('rematchCountdown'),
-                    width: 220,
-                    height: 220,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: const RadialGradient(
-                        colors: [_sprintYellow, _sprintOrange],
-                      ),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.92),
-                        width: 5,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: _sprintYellow.withValues(
-                            alpha: 0.45 + value * 0.30,
+    return Semantics(
+      liveRegion: true,
+      excludeSemantics: true,
+      label: _secondsRemaining > 0
+          ? 'Match starts in $_secondsRemaining seconds'
+          : 'Go',
+      child: DecoratedBox(
+        key: ValueKey(
+          isFirstRound
+              ? 'initialCountdownBackground'
+              : 'rematchCountdownBackground',
+        ),
+        decoration: BoxDecoration(
+          color: isFirstRound ? null : _sprintBlue.withValues(alpha: 0.80),
+          gradient: isFirstRound
+              ? const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF171B63),
+                    Color(0xFF393DA5),
+                    Color(0xFF7565D8),
+                  ],
+                )
+              : null,
+        ),
+        child: Stack(
+          children: [
+            if (isFirstRound)
+              const Positioned.fill(
+                child: CustomPaint(painter: _CountdownBackdropPainter()),
+              ),
+            Center(
+              child: AnimatedBuilder(
+                animation: pulse,
+                builder: (context, child) {
+                  final value = pulse.value;
+                  return Transform.scale(
+                    scale: 0.92 + value * 0.16,
+                    child: Container(
+                      key: const ValueKey('rematchCountdown'),
+                      width: 220,
+                      height: 220,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const RadialGradient(
+                          colors: [_sprintYellow, _sprintOrange],
+                        ),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.92),
+                          width: 5,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: _sprintYellow.withValues(
+                              alpha: 0.45 + value * 0.30,
+                            ),
+                            blurRadius: 34 + value * 28,
+                            spreadRadius: 8 + value * 12,
                           ),
-                          blurRadius: 34 + value * 28,
-                          spreadRadius: 8 + value * 12,
-                        ),
-                        const BoxShadow(
-                          color: Color(0x99000000),
-                          blurRadius: 26,
-                          offset: Offset(0, 18),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          label,
-                          key: const ValueKey('rematchCountdownValue'),
-                          style: const TextStyle(
-                            color: _sprintBlue,
-                            fontSize: 92,
-                            height: 0.95,
-                            fontWeight: FontWeight.w900,
-                            shadows: [
-                              Shadow(
-                                color: Color(0x55000000),
-                                blurRadius: 8,
-                                offset: Offset(0, 5),
-                              ),
-                            ],
+                          const BoxShadow(
+                            color: Color(0x99000000),
+                            blurRadius: 26,
+                            offset: Offset(0, 18),
                           ),
-                        ),
-                        if (!isFirstRound)
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
                           Text(
-                            'ROUND ${widget.roundNumber}',
+                            label,
+                            key: const ValueKey('rematchCountdownValue'),
                             style: const TextStyle(
                               color: _sprintBlue,
+                              fontSize: 92,
+                              height: 0.95,
                               fontWeight: FontWeight.w900,
-                              letterSpacing: 2,
+                              shadows: [
+                                Shadow(
+                                  color: Color(0x55000000),
+                                  blurRadius: 8,
+                                  offset: Offset(0, 5),
+                                ),
+                              ],
                             ),
                           ),
-                      ],
+                          if (!isFirstRound)
+                            Text(
+                              'ROUND ${widget.roundNumber}',
+                              style: const TextStyle(
+                                color: _sprintBlue,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -465,6 +519,8 @@ class _RematchPanel extends StatelessWidget {
           message = value.requestedBy == currentUserId
               ? 'Waiting for your opponent…'
               : 'Your opponent wants a rematch.';
+        case GameRematchStatus.preparing:
+          message = 'Both players are ready. Preparing the next round…';
         case GameRematchStatus.starting:
           message = 'Rematch accepted. Starting round ${value.roundNumber}…';
         case GameRematchStatus.declined:

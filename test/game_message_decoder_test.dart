@@ -152,18 +152,34 @@ void main() {
           'status': 'starting',
           'roundNumber': 2,
           'startsInMs': 5000,
+          'startsAtMs': 105000,
+          'serverTimeMs': 100000,
         }),
       ),
     );
     expect(starting.status, GameRematchStatus.starting);
     expect(starting.roundNumber, 2);
     expect(starting.startsInMs, 5000);
+    expect(starting.startsAtMs, 105000);
+    expect(starting.serverTimeMs, 100000);
+
+    final preparing = decoder.decodeRematchStatus(
+      utf8.encode(jsonEncode({'status': 'preparing', 'roundNumber': 2})),
+    );
+    expect(preparing.status, GameRematchStatus.preparing);
+    expect(preparing.roundNumber, 2);
   });
 
   test('rejects malformed rematch status payloads', () {
     expect(
       () => decoder.decodeRematchStatus(
         utf8.encode(jsonEncode({'status': 'unknown'})),
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => decoder.decodeRematchStatus(
+        utf8.encode(jsonEncode({'status': 'starting', 'roundNumber': 2})),
       ),
       throwsFormatException,
     );

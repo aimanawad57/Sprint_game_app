@@ -1,5 +1,6 @@
 enum GameRematchStatus {
   requested('requested'),
+  preparing('preparing'),
   declined('declined'),
   expired('expired'),
   starting('starting'),
@@ -17,6 +18,8 @@ class RematchStatusView {
     this.declinedBy,
     this.expiresInMs,
     this.startsInMs,
+    this.startsAtMs,
+    this.serverTimeMs,
     this.roundNumber,
   });
 
@@ -25,6 +28,8 @@ class RematchStatusView {
   final String? declinedBy;
   final int? expiresInMs;
   final int? startsInMs;
+  final int? startsAtMs;
+  final int? serverTimeMs;
   final int? roundNumber;
 
   factory RematchStatusView.fromJson(Map<String, dynamic> json) {
@@ -54,13 +59,23 @@ class RematchStatusView {
       return value;
     }
 
-    return RematchStatusView(
+    final view = RematchStatusView(
       status: status,
       requestedBy: optionalId('requestedBy'),
       declinedBy: optionalId('declinedBy'),
       expiresInMs: optionalNonNegativeInt('expiresInMs'),
       startsInMs: optionalNonNegativeInt('startsInMs'),
+      startsAtMs: optionalNonNegativeInt('startsAtMs'),
+      serverTimeMs: optionalNonNegativeInt('serverTimeMs'),
       roundNumber: optionalNonNegativeInt('roundNumber'),
     );
+    if (status == GameRematchStatus.starting &&
+        view.startsAtMs == null &&
+        view.startsInMs == null) {
+      throw const FormatException(
+        'A starting round requires startsAtMs or startsInMs',
+      );
+    }
+    return view;
   }
 }

@@ -122,9 +122,9 @@ test("redeeming the code deals cards once both seats are connected", () => {
   runtime.sprintMatchJoin({}, logger, nk, dispatcher, 0, state, [presence("challenger-1")]);
   assert.equal(state.playerOrder[1], "challenger-1");
   assert.equal(state.status, runtime.MatchStatus.Waiting);
-  assert.notEqual(state.rematchStartsAtMs, null);
+  assert.notEqual(state.roundStartsAtMs, null);
 
-  state.rematchStartsAtMs = Date.now() - 1;
+  state.roundStartsAtMs = Date.now() - 1;
   runtime.sprintMatchLoop({}, logger, nk, dispatcher, 1, state, []);
   assert.equal(state.status, runtime.MatchStatus.Active);
   assert.equal(state.players["creator-1"].hand.length, 3);

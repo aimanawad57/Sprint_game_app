@@ -696,6 +696,8 @@ class _PlayPageState extends State<PlayPage> {
                 Positioned.fill(
                   child: RoundCountdownOverlay(
                     durationMs: roundStart.startsInMs ?? 5000,
+                    startsAtMs: roundStart.startsAtMs,
+                    serverTimeMs: roundStart.serverTimeMs,
                     roundNumber: roundStart.roundNumber,
                   ),
                 ),

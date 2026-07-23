@@ -376,8 +376,62 @@ void main() {
         find.byKey(const ValueKey('rematchCountdownValue')),
         findsOneWidget,
       );
+      final semantics = tester.getSemantics(
+        find.byKey(const ValueKey('initialCountdownBackground')),
+      );
+      expect(semantics.label, 'Match starts in 5 seconds');
     },
   );
+
+  testWidgets('preparing rematch confirms both players are ready', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      endReason: GameMatchEndReason.normal,
+      rematchStatus: const RematchStatusView(
+        status: GameRematchStatus.preparing,
+        roundNumber: 2,
+      ),
+    );
+
+    expect(
+      find.text('Both players are ready. Preparing the next round…'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('acceptRematchButton')), findsNothing);
+  });
+
+  testWidgets('countdown adopts a resynchronized server deadline', (
+    tester,
+  ) async {
+    Future<void> pumpCountdown({
+      required int startsAtMs,
+      required int serverTimeMs,
+    }) {
+      return tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RoundCountdownOverlay(
+              durationMs: 5000,
+              startsAtMs: startsAtMs,
+              serverTimeMs: serverTimeMs,
+              roundNumber: 1,
+            ),
+          ),
+        ),
+      );
+    }
+
+    await pumpCountdown(startsAtMs: 105000, serverTimeMs: 100000);
+    final value = find.byKey(const ValueKey('rematchCountdownValue'));
+    expect(tester.widget<Text>(value).data, '5');
+
+    await pumpCountdown(startsAtMs: 202000, serverTimeMs: 200000);
+    expect(tester.widget<Text>(value).data, '2');
+  });
 
   testWidgets('shows a losing result when the opponent wins', (tester) async {
     await pumpPanel(

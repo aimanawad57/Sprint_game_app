@@ -143,10 +143,15 @@ The first acceptance broadcasts opcode `16` with `status: "requested"`,
 Requests expire after 30 seconds, and a departing player makes the rematch
 unavailable.
 
-Once both players accept, the server broadcasts `status: "starting"` with the
-next `roundNumber` and `startsInMs: 5000`. Both clients show a synchronized
-five-second countdown while the server waits. The previous result must persist successfully before the
-finished state is replaced. The server then creates a fresh shuffled round,
+Once both players accept, the rematch enters a locked preparation phase.
+Further decisions and request expiry cannot change it. If the previous result
+is still being stored, the server first broadcasts `status: "preparing"`.
+Only after persistence succeeds does it broadcast `status: "starting"` with
+the next `roundNumber`, `startsInMs: 5000`, the absolute `startsAtMs` deadline,
+and `serverTimeMs`. Both clients show a synchronized five-second countdown.
+Joining or reconnecting players receive the current deadline directly.
+
+The server then creates a fresh shuffled round,
 resets round-specific timers, moves, winner data, fairness state, and persistence
 guards, and sends a new private opcode `10` state to both players. The match ID,
 player identities, display names, and current presences remain unchanged.

@@ -123,8 +123,9 @@ function createWaitingMatchState(
       [playerAId]: "pending",
       [playerBId]: "pending"
     },
+    rematchPhase: "idle",
     rematchRequestedAtMs: null,
-    rematchStartsAtMs: null,
+    roundStartsAtMs: null,
     rematchExpired: false,
     rematchUnavailable: false,
     status: MatchStatus.Waiting,
@@ -178,8 +179,9 @@ function createOpenWaitingMatchState(
     rematchResponses: {
       [creatorId]: "pending"
     },
+    rematchPhase: "idle",
     rematchRequestedAtMs: null,
-    rematchStartsAtMs: null,
+    roundStartsAtMs: null,
     rematchExpired: false,
     rematchUnavailable: false,
     status: MatchStatus.Waiting,
@@ -349,25 +351,48 @@ function broadcastRematchStatus(
   );
 }
 
+function roundStartingPayload(
+  state: SprintMatchState,
+  nowMs: number
+): RematchStatusPayload {
+  const startsAtMs = state.roundStartsAtMs || nowMs;
+  return {
+    status: "starting",
+    roundNumber:
+      state.status === MatchStatus.Waiting
+        ? state.roundNumber
+        : state.roundNumber + 1,
+    startsInMs: Math.max(0, startsAtMs - nowMs),
+    startsAtMs: startsAtMs,
+    serverTimeMs: nowMs
+  };
+}
+
+function beginRematchCountdown(
+  dispatcher: nkruntime.MatchDispatcher,
+  state: SprintMatchState,
+  nowMs: number
+): void {
+  state.rematchPhase = "countdown";
+  state.roundStartsAtMs = nowMs + rematchCountdownMs;
+  broadcastRematchStatus(dispatcher, roundStartingPayload(state, nowMs));
+}
+
 function currentRematchStatusPayload(
   state: SprintMatchState,
   nowMs: number
 ): RematchStatusPayload | null {
-  if (state.rematchUnavailable) {
+  if (state.rematchPhase === "unavailable" || state.rematchUnavailable) {
     return {status: "unavailable"};
   }
-  if (state.rematchExpired) {
+  if (state.rematchPhase === "expired" || state.rematchExpired) {
     return {status: "expired"};
   }
-  if (state.rematchStartsAtMs !== null) {
-    return {
-      status: "starting",
-      roundNumber:
-        state.status === MatchStatus.Waiting
-          ? state.roundNumber
-          : state.roundNumber + 1,
-      startsInMs: Math.max(0, state.rematchStartsAtMs - nowMs)
-    };
+  if (state.roundStartsAtMs !== null) {
+    return roundStartingPayload(state, nowMs);
+  }
+  if (state.rematchPhase === "awaiting_persistence") {
+    return {status: "preparing", roundNumber: state.roundNumber + 1};
   }
   const declinedBy = state.playerOrder.find(
     (userId) => state.rematchResponses[userId] === "declined"
@@ -422,6 +447,7 @@ function handleRematchDecision(
     accept === null ||
     state.rematchExpired ||
     state.rematchUnavailable ||
+    (state.rematchPhase !== "idle" && state.rematchPhase !== "requested") ||
     !bothPlayersConnected(state)
   ) {
     return false;
@@ -432,6 +458,7 @@ function handleRematchDecision(
     nowMs - state.rematchRequestedAtMs >= rematchTimeoutMs
   ) {
     state.rematchExpired = true;
+    state.rematchPhase = "expired";
     broadcastRematchStatus(dispatcher, {status: "expired"});
     return false;
   }
@@ -448,6 +475,7 @@ function handleRematchDecision(
   state.rematchResponses[userId] = next;
   state.lastActivityAtMs = nowMs;
   if (!accept) {
+    state.rematchPhase = "declined";
     broadcastRematchStatus(dispatcher, {
       status: "declined",
       declinedBy: userId
@@ -458,16 +486,20 @@ function handleRematchDecision(
   if (state.rematchRequestedAtMs === null) {
     state.rematchRequestedAtMs = nowMs;
   }
+  state.rematchPhase = "requested";
   const bothAccepted = state.playerOrder.every(
     (playerId) => state.rematchResponses[playerId] === "accepted"
   );
   if (bothAccepted) {
-    state.rematchStartsAtMs = nowMs + rematchCountdownMs;
-    broadcastRematchStatus(dispatcher, {
-      status: "starting",
-      roundNumber: state.roundNumber + 1,
-      startsInMs: rematchCountdownMs
-    });
+    if (state.resultPersisted && !state.resultPersistencePending) {
+      beginRematchCountdown(dispatcher, state, nowMs);
+    } else {
+      state.rematchPhase = "awaiting_persistence";
+      broadcastRematchStatus(dispatcher, {
+        status: "preparing",
+        roundNumber: state.roundNumber + 1
+      });
+    }
   } else {
     broadcastRematchStatus(dispatcher, {
       status: "requested",
@@ -941,14 +973,25 @@ function sprintMatchJoin(
   if (
     state.status === MatchStatus.Waiting &&
     bothPlayersConnected(state) &&
-    state.rematchStartsAtMs === null
+    state.roundStartsAtMs === null
   ) {
-    state.rematchStartsAtMs = nowMs + rematchCountdownMs;
-    broadcastRematchStatus(dispatcher, {
-      status: "starting",
-      roundNumber: state.roundNumber,
-      startsInMs: rematchCountdownMs
-    });
+    state.roundStartsAtMs = nowMs + rematchCountdownMs;
+    broadcastRematchStatus(dispatcher, roundStartingPayload(state, nowMs));
+  } else if (
+    state.status === MatchStatus.Waiting &&
+    bothPlayersConnected(state) &&
+    state.roundStartsAtMs !== null
+  ) {
+    const joinedPlayers = presences.filter(
+      (presence) => state.players[presence.userId] !== undefined
+    );
+    if (joinedPlayers.length > 0) {
+      broadcastRematchStatus(
+        dispatcher,
+        roundStartingPayload(state, nowMs),
+        joinedPlayers
+      );
+    }
   }
 
   resyncPresences.forEach((presence) => {
@@ -1031,6 +1074,8 @@ function sprintMatchLeave(
 
   if (state.status === MatchStatus.Finished && changes.length > 0) {
     state.rematchUnavailable = true;
+    state.rematchPhase = "unavailable";
+    state.roundStartsAtMs = null;
     broadcastRematchStatus(dispatcher, {status: "unavailable"});
   }
 
@@ -1078,11 +1123,23 @@ function sprintMatchLoop(
 
   if (
     state.status === MatchStatus.Finished &&
+    state.rematchPhase === "awaiting_persistence" &&
+    state.resultPersisted &&
+    !state.resultPersistencePending &&
+    bothPlayersConnected(state)
+  ) {
+    beginRematchCountdown(dispatcher, state, nowMs);
+  }
+
+  if (
+    state.status === MatchStatus.Finished &&
+    state.rematchPhase === "requested" &&
     state.rematchRequestedAtMs !== null &&
     !state.rematchExpired &&
     nowMs - state.rematchRequestedAtMs >= rematchTimeoutMs
   ) {
     state.rematchExpired = true;
+    state.rematchPhase = "expired";
     broadcastRematchStatus(dispatcher, {status: "expired"});
   }
 
@@ -1170,10 +1227,10 @@ function sprintMatchLoop(
 
   if (
     state.status === MatchStatus.Waiting &&
-    state.rematchStartsAtMs !== null &&
-    nowMs >= state.rematchStartsAtMs
+    state.roundStartsAtMs !== null &&
+    nowMs >= state.roundStartsAtMs
   ) {
-    state.rematchStartsAtMs = null;
+    state.roundStartsAtMs = null;
     if (initializeGameState(state, Math.random, nowMs)) {
       logger.info(
         "Starting sprint round %d for players %s",
@@ -1185,8 +1242,9 @@ function sprintMatchLoop(
   }
 
   if (
-    state.rematchStartsAtMs !== null &&
-    nowMs >= state.rematchStartsAtMs &&
+    state.rematchPhase === "countdown" &&
+    state.roundStartsAtMs !== null &&
+    nowMs >= state.roundStartsAtMs &&
     initializeRematchRound(state, Math.random, nowMs)
   ) {
     logger.info(
