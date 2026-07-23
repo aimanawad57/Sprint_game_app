@@ -11,6 +11,7 @@ gameplay protocol is implemented.
 |---:|---|---|
 | 1 | `submitMove` | Attempt to play a card onto a center pile. |
 | 2 | `abandonMatch` | Explicitly forfeit the active match. |
+| 3 | `rematchDecision` | Accept/request or decline a rematch. |
 
 ### Server to client
 
@@ -22,6 +23,7 @@ gameplay protocol is implemented.
 | 13 | `stuckReset` | Report that center piles were separately reshuffled. |
 | 14 | `gameEnded` | Report the final state and winner. |
 | 15 | `connectionChanged` | Report opponent connection or disconnection. |
+| 16 | `rematchStatus` | Report rematch request, decline, expiry, start, or unavailability. |
 
 The backend uses opcode `15` for connection changes. Its payload contains the
 changes from the current callback and a full snapshot of connected user IDs.
@@ -107,7 +109,7 @@ the recorded match start; finished matches keep the final start-to-end
 duration. Clients may advance an active value locally with a monotonic clock,
 but must freeze the timer at the value in the finished state.
 
-Opcode `10` (`matchStarted`) is implemented. Its initial payload uses
+Opcode `10` (`matchStarted`) is sent once per round. Its payload uses
 `stateVersion: 1`, `status: "active"`, three cards in `myHand`, deck counts of
 26, opponent hand count of 3, and one public top card for each center pile.
 Nakama sends the payload separately to each player presence. It never includes
@@ -127,10 +129,27 @@ move or draw cards optimistically.
 Opcode `11` is also the reconnection resynchronization message. When a canonical
 player joins a match that is already active or finished, Nakama sends the
 current private player view only to that newly joined presence. Resynchronizing
-does not increment `stateVersion`, redeal cards, reshuffle piles, or resend
-`matchStarted`. A delayed leave event from an older socket session cannot mark
+does not increment `stateVersion`, redeal cards, reshuffle piles, or restart
+the current round. A delayed leave event from an older socket session cannot mark
 the replacement session disconnected. Flutter accepts the equal-version
 snapshot because presence reconnection may not involve a gameplay-state change.
+
+### Rematch decision and status
+
+After `gameEnded`, either player may send opcode `3` with
+`{"accept": true}` or `{"accept": false}`. Requesting counts as acceptance.
+The first acceptance broadcasts opcode `16` with `status: "requested"`,
+`requestedBy`, and `expiresInMs`. Declining broadcasts `status: "declined"`.
+Requests expire after 30 seconds, and a departing player makes the rematch
+unavailable.
+
+Once both players accept, the server broadcasts `status: "starting"` with the
+next `roundNumber` and `startsInMs: 5000`. Both clients show a synchronized
+five-second countdown while the server waits. The previous result must persist successfully before the
+finished state is replaced. The server then creates a fresh shuffled round,
+resets round-specific timers, moves, winner data, fairness state, and persistence
+guards, and sends a new private opcode `10` state to both players. The match ID,
+player identities, display names, and current presences remain unchanged.
 
 ### Move rejection - opcode 12
 

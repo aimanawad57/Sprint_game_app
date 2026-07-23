@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sprint_app/models/game/game_card.dart';
 import 'package:sprint_app/models/game/game_move.dart';
 import 'package:sprint_app/models/game/game_state_view.dart';
+import 'package:sprint_app/models/game/rematch_status.dart';
 import 'package:sprint_app/widgets/disconnected_match_banner.dart';
 import 'package:sprint_app/widgets/game_state_panel.dart';
 
@@ -100,6 +101,9 @@ void main() {
     MoveSubmitCallback? onSubmitMove,
     VoidCallback? onBack,
     VoidCallback? onViewProfile,
+    RematchStatusView? rematchStatus,
+    RematchDecisionCallback? onRematchDecision,
+    bool isRematchSubmitting = false,
     bool isSubmitting = false,
     String? feedbackMessage,
     bool movesEnabled = true,
@@ -123,6 +127,9 @@ void main() {
             onSubmitMove: onSubmitMove ?? (_, _) {},
             onBack: onBack ?? () {},
             onViewProfile: onViewProfile,
+            rematchStatus: rematchStatus,
+            onRematchDecision: onRematchDecision,
+            isRematchSubmitting: isRematchSubmitting,
             isSubmitting: isSubmitting,
             feedbackMessage: feedbackMessage,
             movesEnabled: movesEnabled,
@@ -267,6 +274,111 @@ void main() {
     expect(pressed, isTrue);
   });
 
+  testWidgets('rematch button sends acceptance after a finished round', (
+    tester,
+  ) async {
+    bool? decision;
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      endReason: GameMatchEndReason.normal,
+      onRematchDecision: (accept) => decision = accept,
+    );
+
+    final rematch = find.byKey(const ValueKey('acceptRematchButton'));
+    await revealAndSettle(tester, rematch);
+    await tester.tap(rematch);
+    expect(decision, isTrue);
+  });
+
+  testWidgets('opponent rematch request offers accept and decline', (
+    tester,
+  ) async {
+    final decisions = <bool>[];
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      endReason: GameMatchEndReason.normal,
+      rematchStatus: const RematchStatusView(
+        status: GameRematchStatus.requested,
+        requestedBy: 'player-b',
+        expiresInMs: 30000,
+      ),
+      onRematchDecision: decisions.add,
+    );
+
+    expect(find.text('Your opponent wants a rematch.'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('acceptRematchButton')));
+    expect(decisions, [true]);
+  });
+
+  testWidgets('requested, expired, and starting rematch states are clear', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      endReason: GameMatchEndReason.normal,
+      rematchStatus: const RematchStatusView(
+        status: GameRematchStatus.requested,
+        requestedBy: 'player-a',
+      ),
+      onRematchDecision: (_) {},
+    );
+    expect(find.text('Waiting for your opponent…'), findsOneWidget);
+    expect(find.byKey(const ValueKey('acceptRematchButton')), findsNothing);
+
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      endReason: GameMatchEndReason.normal,
+      rematchStatus: const RematchStatusView(status: GameRematchStatus.expired),
+    );
+    expect(find.text('The rematch request expired.'), findsOneWidget);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: RoundCountdownOverlay(durationMs: 5000, roundNumber: 2),
+        ),
+      ),
+    );
+    expect(find.byKey(const ValueKey('rematchCountdown')), findsOneWidget);
+    final countdownValue = find.byKey(const ValueKey('rematchCountdownValue'));
+    expect(countdownValue, findsOneWidget);
+    expect(tester.widget<Text>(countdownValue).data, '5');
+    expect(find.text('ROUND 2'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    expect(tester.widget<Text>(countdownValue).data, '4');
+  });
+
+  testWidgets(
+    'first round countdown hides its round label and uses its backdrop',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: RoundCountdownOverlay(durationMs: 5000, roundNumber: 1),
+          ),
+        ),
+      );
+
+      expect(find.text('ROUND 1'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('initialCountdownBackground')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('rematchCountdownValue')),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('shows a losing result when the opponent wins', (tester) async {
     await pumpPanel(
       tester,
@@ -298,6 +410,11 @@ void main() {
 
     expect(find.text('Opponent disconnected, You Won!'), findsOneWidget);
     expect(find.text('You won'), findsNothing);
+    expect(find.byKey(const ValueKey('acceptRematchButton')), findsNothing);
+    expect(
+      find.text('Play another round with the same opponent?'),
+      findsNothing,
+    );
   });
 
   testWidgets('shows a forfeit loss message after disconnect timeout', (
@@ -314,6 +431,7 @@ void main() {
 
     expect(find.text('You lost by disconnect timeout.'), findsOneWidget);
     expect(find.text('You lost'), findsNothing);
+    expect(find.byKey(const ValueKey('acceptRematchButton')), findsNothing);
   });
 
   testWidgets('invokes the back callback', (tester) async {

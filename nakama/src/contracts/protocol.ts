@@ -5,7 +5,8 @@ enum PileId {
 
 enum ClientOpcode {
   SubmitMove = 1,
-  AbandonMatch = 2
+  AbandonMatch = 2,
+  RematchDecision = 3
 }
 
 enum ServerOpcode {
@@ -14,8 +15,25 @@ enum ServerOpcode {
   MoveRejected = 12,
   StuckReset = 13,
   GameEnded = 14,
-  ConnectionChanged = 15
+  ConnectionChanged = 15,
+  RematchStatus = 16
 }
+
+type RematchStatus =
+  | "requested"
+  | "declined"
+  | "expired"
+  | "starting"
+  | "unavailable";
+
+type RematchStatusPayload = {
+  status: RematchStatus;
+  requestedBy?: string;
+  declinedBy?: string;
+  expiresInMs?: number;
+  startsInMs?: number;
+  roundNumber?: number;
+};
 
 enum MoveRejectionReason {
   InvalidPayload = "invalid_payload",

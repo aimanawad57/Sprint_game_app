@@ -1,6 +1,7 @@
 abstract final class GameClientOpcode {
   static const int submitMove = 1;
   static const int abandonMatch = 2;
+  static const int rematchDecision = 3;
 }
 
 abstract final class GameServerOpcode {
@@ -10,4 +11,5 @@ abstract final class GameServerOpcode {
   static const int stuckReset = 13;
   static const int gameEnded = 14;
   static const int connectionChanged = 15;
+  static const int rematchStatus = 16;
 }

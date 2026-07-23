@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,9 +7,11 @@ import 'package:flutter/scheduler.dart';
 import '../models/game/game_card.dart';
 import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
+import '../models/game/rematch_status.dart';
 import 'game_card_shape.dart';
 
 typedef MoveSubmitCallback = void Function(String cardId, GamePileId pileId);
+typedef RematchDecisionCallback = void Function(bool accept);
 
 const _sprintBlue = Color(0xFF2C3192);
 const _sprintMuted = Color(0xFF59607F);
@@ -25,6 +28,9 @@ class GameStatePanel extends StatefulWidget {
     required this.onSubmitMove,
     required this.onBack,
     this.onViewProfile,
+    this.rematchStatus,
+    this.onRematchDecision,
+    this.isRematchSubmitting = false,
     this.isSubmitting = false,
     this.feedbackMessage,
     this.movesEnabled = true,
@@ -39,6 +45,9 @@ class GameStatePanel extends StatefulWidget {
   final MoveSubmitCallback onSubmitMove;
   final VoidCallback onBack;
   final VoidCallback? onViewProfile;
+  final RematchStatusView? rematchStatus;
+  final RematchDecisionCallback? onRematchDecision;
+  final bool isRematchSubmitting;
   final bool isSubmitting;
   final String? feedbackMessage;
   final bool movesEnabled;
@@ -119,6 +128,15 @@ class _GameStatePanelState extends State<GameStatePanel> {
                 const SizedBox(height: 14),
                 if (gameFinished) ...[
                   _GameResultPanel(message: resultMessage),
+                  if (gameState.endReason == GameMatchEndReason.normal) ...[
+                    const SizedBox(height: 12),
+                    _RematchPanel(
+                      status: widget.rematchStatus,
+                      currentUserId: widget.currentUserId,
+                      isSubmitting: widget.isRematchSubmitting,
+                      onDecision: widget.onRematchDecision,
+                    ),
+                  ],
                   const SizedBox(height: 12),
                 ],
                 if (widget.connectionMessage case final message?) ...[
@@ -217,6 +235,311 @@ class _GameStatePanelState extends State<GameStatePanel> {
     }
 
     return gameState.winnerId == widget.currentUserId ? 'You' : 'Opponent';
+  }
+}
+
+class RoundCountdownOverlay extends StatefulWidget {
+  const RoundCountdownOverlay({
+    super.key,
+    required this.durationMs,
+    required this.roundNumber,
+  });
+
+  final int durationMs;
+  final int? roundNumber;
+
+  @override
+  State<RoundCountdownOverlay> createState() => _RoundCountdownOverlayState();
+}
+
+class _RoundCountdownOverlayState extends State<RoundCountdownOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulseController;
+  Timer? _ticker;
+  late int _secondsRemaining;
+
+  @override
+  void initState() {
+    super.initState();
+    _secondsRemaining = (widget.durationMs / 1000).ceil().clamp(1, 5);
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    )..repeat(reverse: true);
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _secondsRemaining == 0) return;
+      setState(() => _secondsRemaining -= 1);
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pulse = CurvedAnimation(
+      parent: _pulseController,
+      curve: Curves.easeInOut,
+    );
+    final label = _secondsRemaining > 0 ? '$_secondsRemaining' : 'GO!';
+    final isFirstRound = (widget.roundNumber ?? 1) <= 1;
+
+    return DecoratedBox(
+      key: ValueKey(
+        isFirstRound
+            ? 'initialCountdownBackground'
+            : 'rematchCountdownBackground',
+      ),
+      decoration: BoxDecoration(
+        color: isFirstRound ? null : _sprintBlue.withValues(alpha: 0.80),
+        gradient: isFirstRound
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0xFF171B63),
+                  Color(0xFF393DA5),
+                  Color(0xFF7565D8),
+                ],
+              )
+            : null,
+      ),
+      child: Stack(
+        children: [
+          if (isFirstRound)
+            const Positioned.fill(
+              child: CustomPaint(painter: _CountdownBackdropPainter()),
+            ),
+          Center(
+            child: AnimatedBuilder(
+              animation: pulse,
+              builder: (context, child) {
+                final value = pulse.value;
+                return Transform.scale(
+                  scale: 0.92 + value * 0.16,
+                  child: Container(
+                    key: const ValueKey('rematchCountdown'),
+                    width: 220,
+                    height: 220,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: const RadialGradient(
+                        colors: [_sprintYellow, _sprintOrange],
+                      ),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.92),
+                        width: 5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _sprintYellow.withValues(
+                            alpha: 0.45 + value * 0.30,
+                          ),
+                          blurRadius: 34 + value * 28,
+                          spreadRadius: 8 + value * 12,
+                        ),
+                        const BoxShadow(
+                          color: Color(0x99000000),
+                          blurRadius: 26,
+                          offset: Offset(0, 18),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          label,
+                          key: const ValueKey('rematchCountdownValue'),
+                          style: const TextStyle(
+                            color: _sprintBlue,
+                            fontSize: 92,
+                            height: 0.95,
+                            fontWeight: FontWeight.w900,
+                            shadows: [
+                              Shadow(
+                                color: Color(0x55000000),
+                                blurRadius: 8,
+                                offset: Offset(0, 5),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (!isFirstRound)
+                          Text(
+                            'ROUND ${widget.roundNumber}',
+                            style: const TextStyle(
+                              color: _sprintBlue,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 2,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CountdownBackdropPainter extends CustomPainter {
+  const _CountdownBackdropPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final glowPaint = Paint()
+      ..shader =
+          const RadialGradient(
+            colors: [Color(0x66FFFFFF), Color(0x00FFFFFF)],
+          ).createShader(
+            Rect.fromCircle(
+              center: Offset(size.width * 0.5, size.height * 0.46),
+              radius: size.shortestSide * 0.55,
+            ),
+          );
+    canvas.drawRect(Offset.zero & size, glowPaint);
+
+    final orbitPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.12)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    final center = Offset(size.width / 2, size.height * 0.46);
+    for (final radius in <double>[150, 230, 320]) {
+      canvas.drawCircle(center, radius, orbitPaint);
+    }
+
+    final sparkPaint = Paint()..color = _sprintYellow.withValues(alpha: 0.55);
+    const sparks = <Offset>[
+      Offset(0.12, 0.18),
+      Offset(0.83, 0.16),
+      Offset(0.18, 0.72),
+      Offset(0.88, 0.68),
+      Offset(0.30, 0.87),
+      Offset(0.70, 0.84),
+    ];
+    for (var index = 0; index < sparks.length; index++) {
+      final spark = sparks[index];
+      canvas.drawCircle(
+        Offset(size.width * spark.dx, size.height * spark.dy),
+        index.isEven ? 5 : 3,
+        sparkPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CountdownBackdropPainter oldDelegate) => false;
+}
+
+class _RematchPanel extends StatelessWidget {
+  const _RematchPanel({
+    required this.status,
+    required this.currentUserId,
+    required this.isSubmitting,
+    required this.onDecision,
+  });
+
+  final RematchStatusView? status;
+  final String currentUserId;
+  final bool isSubmitting;
+  final RematchDecisionCallback? onDecision;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = status;
+    String message;
+    if (value == null) {
+      message = 'Play another round with the same opponent?';
+    } else {
+      switch (value.status) {
+        case GameRematchStatus.requested:
+          message = value.requestedBy == currentUserId
+              ? 'Waiting for your opponent…'
+              : 'Your opponent wants a rematch.';
+        case GameRematchStatus.starting:
+          message = 'Rematch accepted. Starting round ${value.roundNumber}…';
+        case GameRematchStatus.declined:
+          message = 'The rematch was declined.';
+        case GameRematchStatus.expired:
+          message = 'The rematch request expired.';
+        case GameRematchStatus.unavailable:
+          message = 'Rematch is unavailable because a player left.';
+      }
+    }
+
+    final canDecide =
+        onDecision != null &&
+        !isSubmitting &&
+        (value == null ||
+            (value.status == GameRematchStatus.requested &&
+                value.requestedBy != currentUserId));
+    final waitingForOpponent =
+        value?.status == GameRematchStatus.requested &&
+        value?.requestedBy == currentUserId;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              message,
+              key: const ValueKey('rematchStatusMessage'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+            if (isSubmitting) ...[
+              const SizedBox(height: 12),
+              const Center(child: CircularProgressIndicator()),
+            ] else if (canDecide) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      key: const ValueKey('acceptRematchButton'),
+                      onPressed: () => onDecision!(true),
+                      child: Text(value == null ? 'Rematch' : 'Accept'),
+                    ),
+                  ),
+                  if (value != null) ...[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton(
+                        key: const ValueKey('declineRematchButton'),
+                        onPressed: () => onDecision!(false),
+                        child: const Text('Decline'),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ] else if (waitingForOpponent && onDecision != null) ...[
+              const SizedBox(height: 12),
+              OutlinedButton(
+                key: const ValueKey('cancelRematchButton'),
+                onPressed: () => onDecision!(false),
+                child: const Text('Cancel rematch'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

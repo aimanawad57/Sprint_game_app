@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sprint_app/models/game/rematch_status.dart';
 import 'package:sprint_app/services/game_message_decoder.dart';
 
 void main() {
@@ -126,6 +127,43 @@ void main() {
             'expectedCount': 2,
           }),
         ),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('decodes requested and starting rematch statuses', () {
+    final requested = decoder.decodeRematchStatus(
+      utf8.encode(
+        jsonEncode({
+          'status': 'requested',
+          'requestedBy': 'player-a',
+          'expiresInMs': 30000,
+        }),
+      ),
+    );
+    expect(requested.status, GameRematchStatus.requested);
+    expect(requested.requestedBy, 'player-a');
+    expect(requested.expiresInMs, 30000);
+
+    final starting = decoder.decodeRematchStatus(
+      utf8.encode(
+        jsonEncode({
+          'status': 'starting',
+          'roundNumber': 2,
+          'startsInMs': 5000,
+        }),
+      ),
+    );
+    expect(starting.status, GameRematchStatus.starting);
+    expect(starting.roundNumber, 2);
+    expect(starting.startsInMs, 5000);
+  });
+
+  test('rejects malformed rematch status payloads', () {
+    expect(
+      () => decoder.decodeRematchStatus(
+        utf8.encode(jsonEncode({'status': 'unknown'})),
       ),
       throwsFormatException,
     );

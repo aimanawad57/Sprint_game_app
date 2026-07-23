@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../models/game/game_connection.dart';
 import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
+import '../models/game/rematch_status.dart';
 
 class GameMessageDecoder {
   const GameMessageDecoder();
@@ -17,6 +18,10 @@ class GameMessageDecoder {
 
   GameConnectionView decodeConnectionChanged(List<int>? data) {
     return GameConnectionView.fromJson(_decodeJsonObject(data));
+  }
+
+  RematchStatusView decodeRematchStatus(List<int>? data) {
+    return RematchStatusView.fromJson(_decodeJsonObject(data));
   }
 
   Map<String, dynamic> _decodeJsonObject(List<int>? data) {

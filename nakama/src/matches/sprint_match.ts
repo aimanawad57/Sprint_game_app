@@ -14,6 +14,8 @@ const maxFairnessWindowMs = 300;
 const waitingMatchTimeoutMs = 5 * 60 * 1000;
 const activeIdleTimeoutMs = 15 * 60 * 1000;
 const finishedEmptyGraceMs = 5 * 1000;
+const rematchTimeoutMs = 30 * 1000;
+const rematchCountdownMs = 5 * 1000;
 
 function displayNameFromPresence(presence: nkruntime.Presence): string | null {
   const username = presence.username;
@@ -116,6 +118,15 @@ function createWaitingMatchState(
   };
 
   return {
+    roundNumber: 1,
+    rematchResponses: {
+      [playerAId]: "pending",
+      [playerBId]: "pending"
+    },
+    rematchRequestedAtMs: null,
+    rematchStartsAtMs: null,
+    rematchExpired: false,
+    rematchUnavailable: false,
     status: MatchStatus.Waiting,
     playerOrder: playerOrder,
     players: players,
@@ -163,6 +174,14 @@ function createOpenWaitingMatchState(
   };
 
   return {
+    roundNumber: 1,
+    rematchResponses: {
+      [creatorId]: "pending"
+    },
+    rematchRequestedAtMs: null,
+    rematchStartsAtMs: null,
+    rematchExpired: false,
+    rematchUnavailable: false,
     status: MatchStatus.Waiting,
     playerOrder: [creatorId, UNASSIGNED_PLAYER_ID],
     players: players,
@@ -316,6 +335,147 @@ function broadcastConnectionChanged(
     ServerOpcode.ConnectionChanged,
     JSON.stringify(buildConnectionChangedPayload(state, changes))
   );
+}
+
+function broadcastRematchStatus(
+  dispatcher: nkruntime.MatchDispatcher,
+  payload: RematchStatusPayload,
+  presences?: nkruntime.Presence[]
+): void {
+  dispatcher.broadcastMessage(
+    ServerOpcode.RematchStatus,
+    JSON.stringify(payload),
+    presences
+  );
+}
+
+function currentRematchStatusPayload(
+  state: SprintMatchState,
+  nowMs: number
+): RematchStatusPayload | null {
+  if (state.rematchUnavailable) {
+    return {status: "unavailable"};
+  }
+  if (state.rematchExpired) {
+    return {status: "expired"};
+  }
+  if (state.rematchStartsAtMs !== null) {
+    return {
+      status: "starting",
+      roundNumber:
+        state.status === MatchStatus.Waiting
+          ? state.roundNumber
+          : state.roundNumber + 1,
+      startsInMs: Math.max(0, state.rematchStartsAtMs - nowMs)
+    };
+  }
+  const declinedBy = state.playerOrder.find(
+    (userId) => state.rematchResponses[userId] === "declined"
+  );
+  if (declinedBy) {
+    return {status: "declined", declinedBy: declinedBy};
+  }
+  const requestedBy = state.playerOrder.find(
+    (userId) => state.rematchResponses[userId] === "accepted"
+  );
+  if (requestedBy && state.rematchRequestedAtMs !== null) {
+    return {
+      status: "requested",
+      requestedBy: requestedBy,
+      expiresInMs: Math.max(
+        0,
+        rematchTimeoutMs - (nowMs - state.rematchRequestedAtMs)
+      )
+    };
+  }
+  return null;
+}
+
+function parseRematchDecision(
+  data: ArrayBuffer | string | null
+): boolean | null {
+  let payload: any;
+  try {
+    payload = JSON.parse(decodeMatchMessageData(data));
+  } catch (_) {
+    return null;
+  }
+  return payload && typeof payload.accept === "boolean"
+    ? payload.accept
+    : null;
+}
+
+function handleRematchDecision(
+  dispatcher: nkruntime.MatchDispatcher,
+  state: SprintMatchState,
+  sender: nkruntime.Presence | null,
+  data: any,
+  nowMs: number
+): boolean {
+  const userId = sender?.userId;
+  const accept = parseRematchDecision(data);
+  if (
+    state.status !== MatchStatus.Finished ||
+    state.endReason !== MatchEndReason.Normal ||
+    !userId ||
+    state.playerOrder.indexOf(userId) === -1 ||
+    accept === null ||
+    state.rematchExpired ||
+    state.rematchUnavailable ||
+    !bothPlayersConnected(state)
+  ) {
+    return false;
+  }
+
+  if (
+    state.rematchRequestedAtMs !== null &&
+    nowMs - state.rematchRequestedAtMs >= rematchTimeoutMs
+  ) {
+    state.rematchExpired = true;
+    broadcastRematchStatus(dispatcher, {status: "expired"});
+    return false;
+  }
+
+  const current = state.rematchResponses[userId];
+  const next: RematchResponse = accept ? "accepted" : "declined";
+  if (current === next) {
+    return true;
+  }
+  if (current === "declined") {
+    return false;
+  }
+
+  state.rematchResponses[userId] = next;
+  state.lastActivityAtMs = nowMs;
+  if (!accept) {
+    broadcastRematchStatus(dispatcher, {
+      status: "declined",
+      declinedBy: userId
+    });
+    return true;
+  }
+
+  if (state.rematchRequestedAtMs === null) {
+    state.rematchRequestedAtMs = nowMs;
+  }
+  const bothAccepted = state.playerOrder.every(
+    (playerId) => state.rematchResponses[playerId] === "accepted"
+  );
+  if (bothAccepted) {
+    state.rematchStartsAtMs = nowMs + rematchCountdownMs;
+    broadcastRematchStatus(dispatcher, {
+      status: "starting",
+      roundNumber: state.roundNumber + 1,
+      startsInMs: rematchCountdownMs
+    });
+  } else {
+    broadcastRematchStatus(dispatcher, {
+      status: "requested",
+      requestedBy: userId,
+      expiresInMs: rematchTimeoutMs
+    });
+  }
+  return true;
 }
 
 function sendMatchStarted(
@@ -734,6 +894,7 @@ function sprintMatchJoin(
         disconnectedAtMs: null,
         rttEstimateMs: null
       };
+      state.rematchResponses[presence.userId] = "pending";
       logger.info("Sprint match code redeemed by user: %s", presence.userId);
     }
 
@@ -777,21 +938,17 @@ function sprintMatchJoin(
     );
   }
 
-  if (initializeGameState(state)) {
-    const playerA = state.players[state.playerOrder[0]];
-    const playerB = state.players[state.playerOrder[1]];
-    logger.info(
-      "Sprint match initialized for players %s: hands %d/%d, decks %d/%d, center piles %d/%d, version %d",
-      state.playerOrder.join(","),
-      playerA.hand.length,
-      playerB.hand.length,
-      playerA.deck.length,
-      playerB.deck.length,
-      state.centerPiles.pile_1.length,
-      state.centerPiles.pile_2.length,
-      state.stateVersion
-    );
-    sendMatchStarted(dispatcher, state);
+  if (
+    state.status === MatchStatus.Waiting &&
+    bothPlayersConnected(state) &&
+    state.rematchStartsAtMs === null
+  ) {
+    state.rematchStartsAtMs = nowMs + rematchCountdownMs;
+    broadcastRematchStatus(dispatcher, {
+      status: "starting",
+      roundNumber: state.roundNumber,
+      startsInMs: rematchCountdownMs
+    });
   }
 
   resyncPresences.forEach((presence) => {
@@ -802,6 +959,10 @@ function sprintMatchJoin(
       presence,
       ServerOpcode.StateUpdate
     );
+    const rematchStatus = currentRematchStatusPayload(state, nowMs);
+    if (state.status === MatchStatus.Finished && rematchStatus) {
+      broadcastRematchStatus(dispatcher, rematchStatus, [presence]);
+    }
     logger.info(
       "Resynchronized sprint player %s at version %d",
       presence.userId,
@@ -868,6 +1029,11 @@ function sprintMatchLeave(
 
   broadcastConnectionChanged(dispatcher, state, changes);
 
+  if (state.status === MatchStatus.Finished && changes.length > 0) {
+    state.rematchUnavailable = true;
+    broadcastRematchStatus(dispatcher, {status: "unavailable"});
+  }
+
   if (changes.length > 0) {
     logger.info(
       "Sprint match connection change: connected users %s",
@@ -910,6 +1076,16 @@ function sprintMatchLoop(
     }
   }
 
+  if (
+    state.status === MatchStatus.Finished &&
+    state.rematchRequestedAtMs !== null &&
+    !state.rematchExpired &&
+    nowMs - state.rematchRequestedAtMs >= rematchTimeoutMs
+  ) {
+    state.rematchExpired = true;
+    broadcastRematchStatus(dispatcher, {status: "expired"});
+  }
+
   const timeoutResult = resolveDisconnectTimeout(state, nowMs);
   if (timeoutResult.finished) {
     logger.info(
@@ -921,6 +1097,16 @@ function sprintMatchLoop(
   }
 
   messages.forEach((message) => {
+    if (message.opCode === ClientOpcode.RematchDecision) {
+      handleRematchDecision(
+        dispatcher,
+        state,
+        message.sender || null,
+        message.data,
+        nowMs
+      );
+      return;
+    }
     if (message.opCode === ClientOpcode.AbandonMatch) {
       if (abandonMatch(state, message.sender || null, nowMs)) {
         state.lastActivityAtMs = nowMs;
@@ -981,6 +1167,35 @@ function sprintMatchLoop(
     );
     state.lastActivityAtMs = nowMs;
   });
+
+  if (
+    state.status === MatchStatus.Waiting &&
+    state.rematchStartsAtMs !== null &&
+    nowMs >= state.rematchStartsAtMs
+  ) {
+    state.rematchStartsAtMs = null;
+    if (initializeGameState(state, Math.random, nowMs)) {
+      logger.info(
+        "Starting sprint round %d for players %s",
+        state.roundNumber,
+        state.playerOrder.join(",")
+      );
+      sendMatchStarted(dispatcher, state);
+    }
+  }
+
+  if (
+    state.rematchStartsAtMs !== null &&
+    nowMs >= state.rematchStartsAtMs &&
+    initializeRematchRound(state, Math.random, nowMs)
+  ) {
+    logger.info(
+      "Starting sprint rematch round %d for players %s",
+      state.roundNumber,
+      state.playerOrder.join(",")
+    );
+    sendMatchStarted(dispatcher, state);
+  }
 
   const readyMoves = collectReadyPendingSubmitMoves(state, Date.now());
   if (readyMoves.length > 0) {

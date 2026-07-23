@@ -15,6 +15,9 @@ function loadRuntimeForTest() {
     "cloneAndShuffleCards," +
     "createWaitingMatchState," +
     "initializeGameState," +
+    "initializeRematchRound," +
+    "handleRematchDecision," +
+    "rematchTimeoutMs," +
     "buildPlayerStateView," +
     "calculateElapsedTimeMs," +
     "applySubmitMove," +
@@ -350,17 +353,34 @@ test("match lifecycle sends connection changes before private matchStarted event
   assert.deepEqual(calls.map((call) => call.opcode), [runtime.ServerOpcode.ConnectionChanged]);
 
   runtime.sprintMatchJoin(null, logger, null, dispatcher, 2, state, [presenceB]);
+  assert.equal(state.status, runtime.MatchStatus.Waiting);
+  assert.equal(state.stateVersion, 0);
+  assert.notEqual(state.rematchStartsAtMs, null);
+  assert.deepEqual(calls.map((call) => call.opcode), [
+    runtime.ServerOpcode.ConnectionChanged,
+    runtime.ServerOpcode.ConnectionChanged,
+    runtime.ServerOpcode.RematchStatus,
+  ]);
+  assert.deepEqual(calls[2].data, {
+    status: "starting",
+    roundNumber: 1,
+    startsInMs: 5000,
+  });
+
+  state.rematchStartsAtMs = Date.now() - 1;
+  runtime.sprintMatchLoop(null, logger, null, dispatcher, 3, state, []);
   assert.equal(state.status, runtime.MatchStatus.Active);
   assert.equal(state.stateVersion, 1);
   assert.deepEqual(calls.map((call) => call.opcode), [
     runtime.ServerOpcode.ConnectionChanged,
     runtime.ServerOpcode.ConnectionChanged,
+    runtime.ServerOpcode.RematchStatus,
     runtime.ServerOpcode.MatchStarted,
     runtime.ServerOpcode.MatchStarted,
   ]);
 
-  const startedA = calls[2];
-  const startedB = calls[3];
+  const startedA = calls[3];
+  const startedB = calls[4];
   assert.equal(startedA.presences.length, 1);
   assert.equal(startedB.presences.length, 1);
   assert.strictEqual(startedA.presences[0], presenceA);
@@ -378,8 +398,8 @@ test("match lifecycle sends connection changes before private matchStarted event
   assert.equal(state.players["player-b"].displayName, "Bob");
 
   const cardSnapshot = normalize(collectStateCards(state));
-  runtime.sprintMatchLeave(null, logger, null, dispatcher, 3, state, [presenceA]);
-  runtime.sprintMatchJoin(null, logger, null, dispatcher, 4, state, [presenceA]);
+  runtime.sprintMatchLeave(null, logger, null, dispatcher, 4, state, [presenceA]);
+  runtime.sprintMatchJoin(null, logger, null, dispatcher, 5, state, [presenceA]);
   assert.equal(state.stateVersion, 1);
   assert.deepEqual(normalize(collectStateCards(state)), cardSnapshot);
   assert.equal(
@@ -435,6 +455,8 @@ test("player views use account display names instead of generated presence usern
   assert.equal(state.players["player-a"].displayName, "Mohammed");
   assert.equal(state.players["player-b"].displayName, "Aiman");
 
+  state.rematchStartsAtMs = Date.now() - 1;
+  runtime.sprintMatchLoop(null, logger, nk, dispatcher, 2, state, []);
   state.status = runtime.MatchStatus.Finished;
   state.winnerId = "player-a";
   const view = runtime.buildPlayerStateView(state, "player-b");
@@ -1518,6 +1540,85 @@ test("deterministic full matches finish while preserving every card", () => {
     assert.ok(acceptedMoves > 0 && acceptedMoves <= 100);
     assert.equal(state.resultPersistencePending, true);
   }
+});
+
+test("two rematch acceptances start exactly one fresh round", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Normal;
+  state.endedAtMs = 2000;
+  state.resultPersistencePending = false;
+  state.resultPersisted = true;
+  const calls = [];
+  const dispatcher = {
+    broadcastMessage(opcode, data) {
+      calls.push({opcode, data: JSON.parse(data)});
+    }
+  };
+
+  assert.equal(runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-a"],
+    JSON.stringify({accept: true}), 3000
+  ), true);
+  assert.equal(calls.at(-1).data.status, "requested");
+  assert.equal(runtime.initializeRematchRound(state, seededRandom(1), 3001), false);
+
+  assert.equal(runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-b"],
+    JSON.stringify({accept: true}), 3002
+  ), true);
+  assert.equal(calls.at(-1).data.status, "starting");
+  assert.equal(calls.at(-1).data.startsInMs, 5000);
+  assert.equal(runtime.initializeRematchRound(state, seededRandom(2), 3003), false);
+  assert.equal(runtime.initializeRematchRound(state, seededRandom(2), 8002), true);
+  assert.equal(state.roundNumber, 2);
+  assert.equal(state.status, runtime.MatchStatus.Active);
+  assert.equal(state.stateVersion, 1);
+  assert.equal(state.winnerId, null);
+  assert.equal(state.endedAtMs, null);
+  assert.equal(state.pendingMoves.length, 0);
+  assertCardConservation(state);
+  assert.equal(runtime.initializeRematchRound(state, seededRandom(3), 8003), false);
+});
+
+test("rematch decisions reject active matches, outsiders, and acceptance after decline", () => {
+  const state = createInitializedState(runtime);
+  const dispatcher = {broadcastMessage() {}};
+  assert.equal(runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-a"],
+    JSON.stringify({accept: true}), 1000
+  ), false);
+
+  state.status = runtime.MatchStatus.Finished;
+  state.endReason = runtime.MatchEndReason.Normal;
+  state.resultPersisted = true;
+  assert.equal(runtime.handleRematchDecision(
+    dispatcher, state, {userId: "outsider"},
+    JSON.stringify({accept: true}), 2000
+  ), false);
+  assert.equal(runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-a"],
+    JSON.stringify({accept: false}), 2001
+  ), true);
+  assert.equal(runtime.handleRematchDecision(
+    dispatcher, state, state.presences["player-a"],
+    JSON.stringify({accept: true}), 2002
+  ), false);
+});
+
+test("rematch decisions are rejected after a disconnect forfeit", () => {
+  const state = createInitializedState(runtime);
+  state.status = runtime.MatchStatus.Finished;
+  state.winnerId = "player-a";
+  state.endReason = runtime.MatchEndReason.Forfeit;
+  state.resultPersisted = true;
+
+  assert.equal(runtime.handleRematchDecision(
+    {broadcastMessage() {}}, state, state.presences["player-a"],
+    JSON.stringify({accept: true}), 2000
+  ), false);
+  assert.equal(state.rematchResponses["player-a"], "pending");
 });
 
 test("sprintMatchLoop broadcasts private state updates and targeted move rejections", () => {

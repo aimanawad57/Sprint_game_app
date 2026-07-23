@@ -159,6 +159,18 @@ class NakamaService {
     );
   }
 
+  void sendRematchDecision({
+    required nakama.NakamaWebsocketClient socket,
+    required String matchId,
+    required bool accept,
+  }) {
+    socket.sendMatchData(
+      matchId: matchId,
+      opCode: GameClientOpcode.rematchDecision,
+      data: utf8.encode(jsonEncode({'accept': accept})),
+    );
+  }
+
   Future<void> abandonAuthoritativeMatch({
     required nakama.Session session,
     required String matchId,

@@ -12,6 +12,8 @@ enum MatchEndReason {
   Abandoned = "abandoned"
 }
 
+type RematchResponse = "pending" | "accepted" | "declined";
+
 type PlayerMatchState = {
   userId: string;
   displayName: string;
@@ -26,6 +28,12 @@ type PlayerMatchState = {
 };
 
 type SprintMatchState = {
+  roundNumber: number;
+  rematchResponses: {[userId: string]: RematchResponse};
+  rematchRequestedAtMs: number | null;
+  rematchStartsAtMs: number | null;
+  rematchExpired: boolean;
+  rematchUnavailable: boolean;
   status: MatchStatus;
   playerOrder: [string, string];
   players: {[userId: string]: PlayerMatchState};

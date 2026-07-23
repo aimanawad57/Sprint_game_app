@@ -173,3 +173,56 @@ function initializeGameState(
   assertInitializedCardState(state);
   return true;
 }
+
+function initializeRematchRound(
+  state: SprintMatchState,
+  random: RandomSource = Math.random,
+  nowMs: number = Date.now()
+): boolean {
+  if (
+    state.status !== MatchStatus.Finished ||
+    !state.resultPersisted ||
+    state.resultPersistencePending ||
+    state.rematchStartsAtMs === null ||
+    nowMs < state.rematchStartsAtMs ||
+    !bothPlayersConnected(state) ||
+    !state.playerOrder.every(
+      (userId) => state.rematchResponses[userId] === "accepted"
+    )
+  ) {
+    return false;
+  }
+
+  state.playerOrder.forEach((userId) => {
+    const player = state.players[userId];
+    player.hand = [];
+    player.deck = [];
+    player.disconnectedAtMs = null;
+    player.rttEstimateMs = null;
+  });
+  state.centerPiles = {pile_1: [], pile_2: []};
+  state.status = MatchStatus.Waiting;
+  state.stateVersion = 0;
+  state.winnerId = null;
+  state.endReason = null;
+  state.startedAtMs = null;
+  state.endedAtMs = null;
+  state.resultPersistencePending = false;
+  state.resultPersisted = false;
+  state.lastBroadcastAtMs = null;
+  state.pendingMoves = [];
+  state.nextPendingMoveSequence = 0;
+  state.nextTieBreakerPlayerId = state.playerOrder[0];
+  state.lastActivityAtMs = nowMs;
+  state.finishedEmptySinceMs = null;
+  state.roundNumber += 1;
+  state.rematchRequestedAtMs = null;
+  state.rematchStartsAtMs = null;
+  state.rematchExpired = false;
+  state.rematchUnavailable = false;
+  state.playerOrder.forEach((userId) => {
+    state.rematchResponses[userId] = "pending";
+  });
+
+  return initializeGameState(state, random, nowMs);
+}

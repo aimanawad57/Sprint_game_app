@@ -7,6 +7,7 @@ import '../config/game_protocol.dart';
 import '../models/game/game_connection.dart';
 import '../models/game/game_move.dart';
 import '../models/game/game_state_view.dart';
+import '../models/game/rematch_status.dart';
 import '../models/play_exit_action.dart';
 import '../services/game_message_decoder.dart';
 import '../services/nakama_service.dart';
@@ -66,6 +67,9 @@ class _PlayPageState extends State<PlayPage> {
   bool _isRecoveringConnection = false;
   int _matchedPlayerCount = 0;
   GameConnectionView? _connectionState;
+  RematchStatusView? _rematchStatus;
+  bool _isRematchSubmitting = false;
+  Timer? _rematchResponseTimer;
 
   /// When the most recent authoritative state was applied, on this device's
   /// clock. Anchors the reaction-time measurement sent with the next move.
@@ -92,6 +96,7 @@ class _PlayPageState extends State<PlayPage> {
     unawaited(_socketDisconnectSubscription?.cancel());
     unawaited(_cancelMatchmaking());
     unawaited(_leaveMatchIfJoined());
+    _rematchResponseTimer?.cancel();
     super.dispose();
   }
 
@@ -287,6 +292,11 @@ class _PlayPageState extends State<PlayPage> {
     try {
       switch (message.opCode) {
         case GameServerOpcode.matchStarted:
+          _applyAuthoritativeState(
+            _messageDecoder.decodeGameState(message.data),
+            startsNewRound: true,
+          );
+          break;
         case GameServerOpcode.stateUpdate:
         case GameServerOpcode.stuckReset:
         case GameServerOpcode.gameEnded:
@@ -301,6 +311,17 @@ class _PlayPageState extends State<PlayPage> {
             _isMovePending = false;
             _pendingCardId = null;
             _moveFeedback = rejection.reason.displayMessage;
+          });
+          break;
+        case GameServerOpcode.rematchStatus:
+          final rematchStatus = _messageDecoder.decodeRematchStatus(
+            message.data,
+          );
+          if (!mounted) return;
+          _rematchResponseTimer?.cancel();
+          setState(() {
+            _rematchStatus = rematchStatus;
+            _isRematchSubmitting = false;
           });
           break;
         case GameServerOpcode.connectionChanged:
@@ -328,11 +349,15 @@ class _PlayPageState extends State<PlayPage> {
     }
   }
 
-  void _applyAuthoritativeState(GameStateView gameState) {
+  void _applyAuthoritativeState(
+    GameStateView gameState, {
+    bool startsNewRound = false,
+  }) {
     if (!mounted) return;
 
     final currentState = _gameState;
-    if (currentState != null &&
+    if (!startsNewRound &&
+        currentState != null &&
         gameState.stateVersion < currentState.stateVersion) {
       debugPrint(
         'Ignoring older game state version ${gameState.stateVersion}; '
@@ -361,7 +386,49 @@ class _PlayPageState extends State<PlayPage> {
         _isMovePending = false;
       }
       _status = PlayQueueStatus.ready;
+      if (startsNewRound) {
+        _rematchResponseTimer?.cancel();
+        _pendingCardId = null;
+        _isMovePending = false;
+        _moveFeedback = null;
+        _rematchStatus = null;
+        _isRematchSubmitting = false;
+      }
     });
+  }
+
+  void _sendRematchDecision(bool accept) {
+    final socket = _socket;
+    final matchId = _matchId ?? _joiningMatchId;
+    if (socket == null || matchId == null || _isRematchSubmitting) return;
+
+    setState(() {
+      _isRematchSubmitting = true;
+      _moveFeedback = null;
+    });
+    try {
+      widget.nakamaService.sendRematchDecision(
+        socket: socket,
+        matchId: matchId,
+        accept: accept,
+      );
+      _rematchResponseTimer?.cancel();
+      _rematchResponseTimer = Timer(const Duration(seconds: 8), () {
+        if (!mounted || !_isRematchSubmitting) return;
+        setState(() {
+          _isRematchSubmitting = false;
+          _moveFeedback =
+              'The server did not confirm the rematch request. Try again.';
+        });
+      });
+    } catch (error) {
+      debugPrint('Could not send rematch decision: $error');
+      if (!mounted) return;
+      setState(() {
+        _isRematchSubmitting = false;
+        _moveFeedback = 'Could not send the rematch decision.';
+      });
+    }
   }
 
   void _submitMove(String cardId, GamePileId pileId) {
@@ -558,64 +625,82 @@ class _PlayPageState extends State<PlayPage> {
           leading: BackButton(onPressed: _exitPlayPage),
         ),
         body: SafeArea(
-          child: _status == PlayQueueStatus.ready && gameState != null
-              ? GameStatePanel(
-                  gameState: gameState,
-                  currentUserId: widget.nakamaSession.userId,
-                  onSubmitMove: _submitMove,
-                  onBack: _exitPlayPage,
-                  onViewProfile: gameState.status == GameMatchStatus.finished
-                      ? () => Navigator.of(context).pop(
-                          const PlayExitResult.viewProfile(),
-                        )
-                      : null,
-                  isSubmitting: _isMovePending,
-                  feedbackMessage: _moveFeedback,
-                  movesEnabled: movesEnabled,
-                  connectionMessage: connectionMessage,
-                )
-              : Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Spacer(),
-                      Center(child: _buildStatusIcon()),
-                      const SizedBox(height: 24),
-                      Text(
-                        _title,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        _subtitle,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyLarge,
-                      ),
-                      const SizedBox(height: 32),
-                      if (widget.displayCode != null) ...[
-                        _MatchCodeDisplay(code: widget.displayCode!),
-                        const SizedBox(height: 32),
-                      ],
-                      if (_ticket != null)
-                        _InfoRow(label: 'Queue ticket', value: _ticket!),
-                      if (_matchId != null)
-                        _InfoRow(label: 'Match id', value: _matchId!),
-                      if (_matchedPlayerCount > 0)
-                        _InfoRow(
-                          label: 'Players matched',
-                          value: _matchedPlayerCount.toString(),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: _status == PlayQueueStatus.ready && gameState != null
+                    ? GameStatePanel(
+                        gameState: gameState,
+                        currentUserId: widget.nakamaSession.userId,
+                        onSubmitMove: _submitMove,
+                        onBack: _exitPlayPage,
+                        onViewProfile:
+                            gameState.status == GameMatchStatus.finished
+                            ? () => Navigator.of(
+                                context,
+                              ).pop(const PlayExitResult.viewProfile())
+                            : null,
+                        rematchStatus: _rematchStatus,
+                        isRematchSubmitting: _isRematchSubmitting,
+                        onRematchDecision: _sendRematchDecision,
+                        isSubmitting: _isMovePending,
+                        feedbackMessage: _moveFeedback,
+                        movesEnabled: movesEnabled,
+                        connectionMessage: connectionMessage,
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Spacer(),
+                            Center(child: _buildStatusIcon()),
+                            const SizedBox(height: 24),
+                            Text(
+                              _title,
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.headlineSmall,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              _subtitle,
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.bodyLarge,
+                            ),
+                            const SizedBox(height: 32),
+                            if (widget.displayCode != null) ...[
+                              _MatchCodeDisplay(code: widget.displayCode!),
+                              const SizedBox(height: 32),
+                            ],
+                            if (_ticket != null)
+                              _InfoRow(label: 'Queue ticket', value: _ticket!),
+                            if (_matchId != null)
+                              _InfoRow(label: 'Match id', value: _matchId!),
+                            if (_matchedPlayerCount > 0)
+                              _InfoRow(
+                                label: 'Players matched',
+                                value: _matchedPlayerCount.toString(),
+                              ),
+                            const Spacer(),
+                            OutlinedButton.icon(
+                              onPressed: _exitPlayPage,
+                              icon: const Icon(Icons.arrow_back),
+                              label: const Text('Back'),
+                            ),
+                          ],
                         ),
-                      const Spacer(),
-                      OutlinedButton.icon(
-                        onPressed: _exitPlayPage,
-                        icon: const Icon(Icons.arrow_back),
-                        label: const Text('Back'),
                       ),
-                    ],
+              ),
+              if (_rematchStatus case final roundStart?
+                  when roundStart.status == GameRematchStatus.starting)
+                Positioned.fill(
+                  child: RoundCountdownOverlay(
+                    durationMs: roundStart.startsInMs ?? 5000,
+                    roundNumber: roundStart.roundNumber,
                   ),
                 ),
+            ],
+          ),
         ),
       ),
     );
@@ -639,10 +724,7 @@ class _MatchCodeDisplay extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Text(
-            'Match code',
-            style: Theme.of(context).textTheme.labelLarge,
-          ),
+          Text('Match code', style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 8),
           SelectableText(
             code,
