@@ -1,14 +1,17 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/services.dart';
 
 import '../models/game/game_card.dart';
 import '../models/game/game_move.dart';
+import '../models/game/game_state_transition.dart';
 import '../models/game/game_state_view.dart';
 import '../models/game/rematch_status.dart';
+import '../gameplay/game_rules.dart';
+import '../utils/elapsed_time_format.dart';
 import 'game_card_shape.dart';
 
 typedef MoveSubmitCallback = void Function(String cardId, GamePileId pileId);
@@ -36,6 +39,24 @@ class GameStatePanel extends StatefulWidget {
     this.feedbackMessage,
     this.movesEnabled = true,
     this.connectionMessage,
+    this.pendingCardId,
+    this.transitions = const <GameStateTransition>[],
+    this.transitionSequence = 0,
+    this.transitionRoundSequence = 0,
+    this.pileResetSequence = 0,
+    this.pileResetActive = false,
+    this.disconnectDeadlineMs,
+    this.connectionServerTimeMs,
+    this.myRttEstimateMs,
+    this.rttSampleSequence = 0,
+    this.localReconnectRemainingSeconds,
+    this.localReconnectExpired = false,
+    this.onRetryReconnect,
+    this.onReturnToMenu,
+    this.onCardSelectedFeedback,
+    this.onIllegalMoveFeedback,
+    this.onIllegalMoveAttempt,
+    this.onResultPresentationStarted,
     this.coachingMessage,
     this.highlightedCardIds = const <String>{},
     this.highlightedPileIds = const <GamePileId>{},
@@ -53,6 +74,24 @@ class GameStatePanel extends StatefulWidget {
   final String? feedbackMessage;
   final bool movesEnabled;
   final String? connectionMessage;
+  final String? pendingCardId;
+  final List<GameStateTransition> transitions;
+  final int transitionSequence;
+  final int transitionRoundSequence;
+  final int pileResetSequence;
+  final bool pileResetActive;
+  final int? disconnectDeadlineMs;
+  final int? connectionServerTimeMs;
+  final int? myRttEstimateMs;
+  final int rttSampleSequence;
+  final int? localReconnectRemainingSeconds;
+  final bool localReconnectExpired;
+  final VoidCallback? onRetryReconnect;
+  final VoidCallback? onReturnToMenu;
+  final VoidCallback? onCardSelectedFeedback;
+  final VoidCallback? onIllegalMoveFeedback;
+  final MoveSubmitCallback? onIllegalMoveAttempt;
+  final VoidCallback? onResultPresentationStarted;
   final String? coachingMessage;
   final Set<String> highlightedCardIds;
   final Set<GamePileId> highlightedPileIds;
@@ -62,12 +101,42 @@ class GameStatePanel extends StatefulWidget {
 }
 
 class _GameStatePanelState extends State<GameStatePanel> {
+  final GlobalKey _opponentAnchorKey = GlobalKey(
+    debugLabel: 'opponent-flight-anchor',
+  );
+  final GlobalKey _playerAnchorKey = GlobalKey(
+    debugLabel: 'player-flight-anchor',
+  );
+  final GlobalKey _pile1AnchorKey = GlobalKey(
+    debugLabel: 'pile-1-flight-anchor',
+  );
+  final GlobalKey _pile2AnchorKey = GlobalKey(
+    debugLabel: 'pile-2-flight-anchor',
+  );
   String? _selectedCardId;
+  GamePileId? _illegalPileId;
+  String? _localFeedback;
+  int _illegalShakeSequence = 0;
+  int _pile1LandingSequence = 0;
+  int _pile2LandingSequence = 0;
+  Timer? _localFeedbackTimer;
+  bool _transitionPresentationBusy = false;
+  bool _resultPresentationPending = false;
+  bool _showResultPresentation = false;
 
   bool get _canPlay {
     return widget.gameState.status == GameMatchStatus.active &&
         !widget.isSubmitting &&
         widget.movesEnabled;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final finished = widget.gameState.status == GameMatchStatus.finished;
+    _transitionPresentationBusy = widget.transitions.isNotEmpty;
+    _resultPresentationPending = finished;
+    _showResultPresentation = finished && !_transitionPresentationBusy;
   }
 
   @override
@@ -79,19 +148,102 @@ class _GameStatePanelState extends State<GameStatePanel> {
     if (!selectedCardStillExists) {
       _selectedCardId = null;
     }
+    if (oldWidget.gameState.stateVersion != widget.gameState.stateVersion) {
+      _illegalPileId = null;
+      _localFeedback = null;
+      _localFeedbackTimer?.cancel();
+    }
+    final wasFinished = oldWidget.gameState.status == GameMatchStatus.finished;
+    final isFinished = widget.gameState.status == GameMatchStatus.finished;
+    if (!wasFinished && isFinished) {
+      _resultPresentationPending = true;
+      _showResultPresentation = false;
+      if (widget.transitions.isNotEmpty) {
+        _transitionPresentationBusy = true;
+      } else if (!_transitionPresentationBusy) {
+        _showResultPresentation = true;
+      }
+    } else if (wasFinished && !isFinished) {
+      _resultPresentationPending = false;
+      _showResultPresentation = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _localFeedbackTimer?.cancel();
+    super.dispose();
   }
 
   void _selectCard(String cardId) {
     if (!_canPlay) return;
+    widget.onCardSelectedFeedback?.call();
     setState(() {
       _selectedCardId = _selectedCardId == cardId ? null : cardId;
+      _illegalPileId = null;
+      _localFeedback = null;
     });
   }
 
   void _submitToPile(GamePileId pileId) {
     final selectedCardId = _selectedCardId;
     if (!_canPlay || selectedCardId == null) return;
+    final selectedCard = widget.gameState.myHand
+        .where((card) => card.cardId == selectedCardId)
+        .firstOrNull;
+    if (selectedCard == null) return;
+    final pileTop = pileId == GamePileId.pile1
+        ? widget.gameState.pile1.topCard
+        : widget.gameState.pile2.topCard;
+    if (!cardsMatch(selectedCard, pileTop)) {
+      _localFeedbackTimer?.cancel();
+      widget.onIllegalMoveFeedback?.call();
+      setState(() {
+        _illegalPileId = pileId;
+        _illegalShakeSequence += 1;
+        _localFeedback = illegalMoveHint;
+      });
+      widget.onIllegalMoveAttempt?.call(selectedCardId, pileId);
+      _localFeedbackTimer = Timer(const Duration(seconds: 2), () {
+        if (!mounted) return;
+        setState(() {
+          _illegalPileId = null;
+          _localFeedback = null;
+        });
+      });
+      return;
+    }
+    setState(() {
+      _illegalPileId = null;
+      _localFeedback = null;
+    });
     widget.onSubmitMove(selectedCardId, pileId);
+  }
+
+  void _handleTransitionBusyChanged(bool busy) {
+    if (!mounted || _transitionPresentationBusy == busy) return;
+    setState(() {
+      _transitionPresentationBusy = busy;
+      if (!busy && _resultPresentationPending) {
+        _showResultPresentation = true;
+      }
+    });
+  }
+
+  void _handleTransitionLanded(Set<GamePileId> piles) {
+    if (!mounted || piles.isEmpty) return;
+    setState(() {
+      if (piles.contains(GamePileId.pile1)) _pile1LandingSequence += 1;
+      if (piles.contains(GamePileId.pile2)) _pile2LandingSequence += 1;
+    });
+  }
+
+  void _finishResultPresentation() {
+    if (!mounted) return;
+    setState(() {
+      _showResultPresentation = false;
+      _resultPresentationPending = false;
+    });
   }
 
   @override
@@ -99,6 +251,7 @@ class _GameStatePanelState extends State<GameStatePanel> {
     final gameState = widget.gameState;
     final gameFinished = gameState.status == GameMatchStatus.finished;
     final resultMessage = _finishedResultMessage(gameState);
+    final moveFeedback = widget.feedbackMessage ?? _localFeedback;
     final instruction =
         widget.coachingMessage ??
         (gameFinished
@@ -121,10 +274,12 @@ class _GameStatePanelState extends State<GameStatePanel> {
               children: [
                 _ArenaHeader(
                   title: gameFinished ? 'Game finished' : 'Game Ongoing',
-                  status: gameState.status.name,
-                  stateVersion: gameState.stateVersion,
                   matchStatus: gameState.status,
                   elapsedTimeMs: gameState.elapsedTimeMs,
+                  myRttEstimateMs: widget.movesEnabled
+                      ? widget.myRttEstimateMs
+                      : null,
+                  rttSampleSequence: widget.rttSampleSequence,
                 ),
                 const SizedBox(height: 14),
                 if (gameFinished) ...[
@@ -141,16 +296,18 @@ class _GameStatePanelState extends State<GameStatePanel> {
                   const SizedBox(height: 12),
                 ],
                 if (widget.connectionMessage case final message?) ...[
-                  _ConnectionPanel(message: message),
-                  const SizedBox(height: 10),
-                ],
-                if (widget.feedbackMessage case final feedback?) ...[
-                  _FeedbackPanel(message: feedback),
+                  _ConnectionPanel(
+                    message: message,
+                    disconnectDeadlineMs: widget.disconnectDeadlineMs,
+                    serverTimeMs: widget.connectionServerTimeMs,
+                    networkRttMs: widget.myRttEstimateMs,
+                  ),
                   const SizedBox(height: 10),
                 ],
                 _OpponentLane(
                   handCount: gameState.opponentHandCount,
                   deckCount: gameState.opponentDeckCount,
+                  anchorKey: _opponentAnchorKey,
                 ),
                 const SizedBox(height: 14),
                 _CenterTable(
@@ -161,9 +318,13 @@ class _GameStatePanelState extends State<GameStatePanel> {
                       key: const ValueKey('centerPile1'),
                       label: 'Pile 1',
                       topCard: gameState.pile1.topCard,
+                      anchorKey: _pile1AnchorKey,
                       highlighted: widget.highlightedPileIds.contains(
                         GamePileId.pile1,
                       ),
+                      rejected: _illegalPileId == GamePileId.pile1,
+                      shakeSequence: _illegalShakeSequence,
+                      landingSequence: _pile1LandingSequence,
                       onTap: _canPlay && _selectedCardId != null
                           ? () => _submitToPile(GamePileId.pile1)
                           : null,
@@ -172,9 +333,13 @@ class _GameStatePanelState extends State<GameStatePanel> {
                       key: const ValueKey('centerPile2'),
                       label: 'Pile 2',
                       topCard: gameState.pile2.topCard,
+                      anchorKey: _pile2AnchorKey,
                       highlighted: widget.highlightedPileIds.contains(
                         GamePileId.pile2,
                       ),
+                      rejected: _illegalPileId == GamePileId.pile2,
+                      shakeSequence: _illegalShakeSequence,
+                      landingSequence: _pile2LandingSequence,
                       onTap: _canPlay && _selectedCardId != null
                           ? () => _submitToPile(GamePileId.pile2)
                           : null,
@@ -186,8 +351,10 @@ class _GameStatePanelState extends State<GameStatePanel> {
                   hand: gameState.myHand,
                   deckCount: gameState.myDeckCount,
                   selectedCardId: _selectedCardId,
+                  pendingCardId: widget.pendingCardId,
                   highlightedCardIds: widget.highlightedCardIds,
                   onSelectCard: _canPlay ? _selectCard : null,
+                  anchorKey: _playerAnchorKey,
                 ),
                 if (widget.isSubmitting) ...[
                   const SizedBox(height: 12),
@@ -209,6 +376,62 @@ class _GameStatePanelState extends State<GameStatePanel> {
               ],
             ),
           ),
+          Positioned.fill(
+            child: _GameplayTransitionOverlay(
+              transitions: widget.transitions,
+              roundSequence: widget.transitionRoundSequence,
+              stateVersion: gameState.stateVersion,
+              playerAnchorKey: _playerAnchorKey,
+              opponentAnchorKey: _opponentAnchorKey,
+              pile1AnchorKey: _pile1AnchorKey,
+              pile2AnchorKey: _pile2AnchorKey,
+              onBusyChanged: _handleTransitionBusyChanged,
+              onLanded: _handleTransitionLanded,
+            ),
+          ),
+          Positioned.fill(
+            child: _PileResetPresentation(
+              sequence: widget.pileResetSequence,
+              active: widget.pileResetActive,
+            ),
+          ),
+          if (moveFeedback != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                key: const ValueKey('moveFeedbackOverlay'),
+                child: SafeArea(
+                  minimum: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: _FeedbackPanel(message: moveFeedback),
+                  ),
+                ),
+              ),
+            ),
+          if (widget.localReconnectRemainingSeconds != null ||
+              widget.localReconnectExpired)
+            Positioned.fill(
+              child: _LocalReconnectOverlay(
+                remainingSeconds: widget.localReconnectRemainingSeconds,
+                expired: widget.localReconnectExpired,
+                onRetry: widget.onRetryReconnect,
+                onReturnToMenu: widget.onReturnToMenu,
+              ),
+            ),
+          if (gameFinished && _showResultPresentation)
+            Positioned.fill(
+              child: _ResultPresentation(
+                outcome: gameState.winnerId == null
+                    ? _ResultOutcome.neutral
+                    : gameState.winnerId == widget.currentUserId
+                    ? _ResultOutcome.victory
+                    : _ResultOutcome.defeat,
+                forfeit: gameState.endReason == GameMatchEndReason.forfeit,
+                elapsedTimeMs: gameState.elapsedTimeMs,
+                onStarted: widget.onResultPresentationStarted,
+                onFinished: _finishResultPresentation,
+              ),
+            ),
         ],
       ),
     );
@@ -245,43 +468,53 @@ class RoundCountdownOverlay extends StatefulWidget {
     required this.durationMs,
     this.startsAtMs,
     this.serverTimeMs,
+    this.networkRttMs,
     required this.roundNumber,
+    this.onCountdownChanged,
   });
 
   final int durationMs;
   final int? startsAtMs;
   final int? serverTimeMs;
+  final int? networkRttMs;
   final int? roundNumber;
+  final ValueChanged<int>? onCountdownChanged;
 
   @override
   State<RoundCountdownOverlay> createState() => _RoundCountdownOverlayState();
 }
 
 class _RoundCountdownOverlayState extends State<RoundCountdownOverlay>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _pulseController;
-  Timer? _ticker;
-  late DateTime _deadline;
+  late final Ticker _deadlineTicker;
+  final Set<int> _emittedCues = <int>{};
+  late int _anchorRemainingMs;
   late int _secondsRemaining;
+  late int _maximumSeconds;
+  String? _logicalDeadlineKey;
+  bool? _reduceMotion;
+  Duration _deadlineElapsed = Duration.zero;
 
   @override
   void initState() {
     super.initState();
-    _setDeadline();
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
     );
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || _secondsRemaining == 0) return;
-      final next = _secondsRemaining - 1;
-      if (next > 0 && next <= 3) {
-        unawaited(HapticFeedback.lightImpact());
-      } else if (next == 0) {
-        unawaited(HapticFeedback.mediumImpact());
-      }
-      setState(() => _secondsRemaining = next);
-    });
+    _deadlineTicker = createTicker(_handleDeadlineTick);
+    _configureDeadline();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (_reduceMotion == reduceMotion) return;
+    _reduceMotion = reduceMotion;
+    _syncPulseAnimation();
   }
 
   @override
@@ -289,45 +522,90 @@ class _RoundCountdownOverlayState extends State<RoundCountdownOverlay>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.startsAtMs != widget.startsAtMs ||
         oldWidget.serverTimeMs != widget.serverTimeMs ||
+        oldWidget.networkRttMs != widget.networkRttMs ||
         (widget.startsAtMs == null &&
             oldWidget.durationMs != widget.durationMs)) {
-      _setDeadline();
+      _configureDeadline();
     }
   }
 
-  void _setDeadline() {
-    final now = DateTime.now();
+  void _configureDeadline() {
+    _deadlineTicker.stop();
     final startsAtMs = widget.startsAtMs;
     final serverTimeMs = widget.serverTimeMs;
-    _deadline = startsAtMs == null
-        ? now.add(Duration(milliseconds: widget.durationMs))
+    final logicalKey = startsAtMs == null
+        ? 'duration:${widget.durationMs}'
+        : 'deadline:$startsAtMs';
+    if (_logicalDeadlineKey != logicalKey) {
+      _emittedCues.clear();
+      _logicalDeadlineKey = logicalKey;
+    }
+    final remainingFromServer = startsAtMs == null
+        ? widget.durationMs
         : serverTimeMs == null
-        ? DateTime.fromMillisecondsSinceEpoch(startsAtMs)
-        : now.add(Duration(milliseconds: startsAtMs - serverTimeMs));
-    _secondsRemaining = _remainingSeconds(now);
+        ? startsAtMs - DateTime.now().millisecondsSinceEpoch
+        : startsAtMs - serverTimeMs;
+    final oneWayCompensationMs = ((widget.networkRttMs ?? 0) / 2)
+        .round()
+        .clamp(0, 500)
+        .toInt();
+    _anchorRemainingMs = math.max(
+      0,
+      remainingFromServer - oneWayCompensationMs,
+    );
+    _maximumSeconds = math.max(1, (widget.durationMs / 1000).ceil());
+    _deadlineElapsed = Duration.zero;
+    _secondsRemaining = _remainingSeconds();
+    _notifyCueOnce(_secondsRemaining);
+    if (_secondsRemaining > 0) _deadlineTicker.start();
   }
 
-  int _remainingSeconds(DateTime now) {
-    return (_deadline.difference(now).inMilliseconds / 1000).ceil().clamp(0, 5);
+  int _remainingSeconds() {
+    final milliseconds = math.max(
+      0,
+      _anchorRemainingMs - _deadlineElapsed.inMilliseconds,
+    );
+    return (milliseconds / 1000).ceil().clamp(0, _maximumSeconds);
+  }
+
+  void _handleDeadlineTick(Duration elapsed) {
+    if (!mounted) return;
+    _deadlineElapsed = elapsed;
+    final next = _remainingSeconds();
+    if (next == _secondsRemaining) return;
+    _notifyCueOnce(next);
+    setState(() => _secondsRemaining = next);
+    if (next == 0) _deadlineTicker.stop();
+  }
+
+  void _notifyCueOnce(int value) {
+    if (value < 0 || value > _maximumSeconds || !_emittedCues.add(value)) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onCountdownChanged?.call(value);
+    });
+  }
+
+  void _syncPulseAnimation() {
+    if (_reduceMotion == true) {
+      _pulseController
+        ..stop()
+        ..value = 0.5;
+    } else if (!_pulseController.isAnimating) {
+      _pulseController.repeat(reverse: true);
+    }
   }
 
   @override
   void dispose() {
-    _ticker?.cancel();
+    _deadlineTicker.dispose();
     _pulseController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final reduceMotion =
-        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
-    if (reduceMotion) {
-      _pulseController.stop();
-      _pulseController.value = 0.5;
-    } else if (!_pulseController.isAnimating) {
-      _pulseController.repeat(reverse: true);
-    }
     final pulse = CurvedAnimation(
       parent: _pulseController,
       curve: Curves.easeInOut,
@@ -602,17 +880,17 @@ class _RematchPanel extends StatelessWidget {
 class _ArenaHeader extends StatelessWidget {
   const _ArenaHeader({
     required this.title,
-    required this.status,
-    required this.stateVersion,
     required this.matchStatus,
     required this.elapsedTimeMs,
+    required this.myRttEstimateMs,
+    required this.rttSampleSequence,
   });
 
   final String title;
-  final String status;
-  final int stateVersion;
   final GameMatchStatus matchStatus;
   final int elapsedTimeMs;
+  final int? myRttEstimateMs;
+  final int rttSampleSequence;
 
   @override
   Widget build(BuildContext context) {
@@ -630,43 +908,67 @@ class _ArenaHeader extends StatelessWidget {
           ),
         ],
       ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final titleBlock = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'SPRINT GAME',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: _sprintBlue,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 3.2,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: _sprintBlue,
+                  fontStyle: FontStyle.italic,
+                  fontWeight: FontWeight.w900,
+                  shadows: const [
+                    Shadow(color: _sprintYellow, offset: Offset(3, 3)),
+                  ],
+                ),
+              ),
+            ],
+          );
+          final indicators = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ElapsedTimeChip(
+                status: matchStatus,
+                elapsedTimeMs: elapsedTimeMs,
+              ),
+              _NetworkQualityIndicator(
+                rttMs: myRttEstimateMs,
+                sampleSequence: rttSampleSequence,
+              ),
+            ],
+          );
+          if (constraints.maxWidth < 430) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  'SPRINT GAME',
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    color: _sprintBlue,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 3.2,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: _sprintBlue,
-                    fontStyle: FontStyle.italic,
-                    fontWeight: FontWeight.w900,
-                    shadows: const [
-                      Shadow(color: _sprintYellow, offset: Offset(3, 3)),
-                    ],
-                  ),
-                ),
+                titleBlock,
+                const SizedBox(height: 12),
+                Align(alignment: Alignment.centerLeft, child: indicators),
               ],
-            ),
-          ),
-          _StatusChip(label: 'Status', value: status),
-          const SizedBox(width: 8),
-          _StatusChip(label: 'State version', value: stateVersion.toString()),
-          const SizedBox(width: 8),
-          _ElapsedTimeChip(status: matchStatus, elapsedTimeMs: elapsedTimeMs),
-        ],
+            );
+          }
+          return Row(
+            children: [
+              Expanded(child: titleBlock),
+              const SizedBox(width: 12),
+              indicators,
+            ],
+          );
+        },
       ),
     );
   }
@@ -751,17 +1053,25 @@ class _ElapsedTimeChipState extends State<_ElapsedTimeChip>
 }
 
 class _OpponentLane extends StatelessWidget {
-  const _OpponentLane({required this.handCount, required this.deckCount});
+  const _OpponentLane({
+    required this.handCount,
+    required this.deckCount,
+    required this.anchorKey,
+  });
 
   final int handCount;
   final int deckCount;
+  final GlobalKey anchorKey;
 
   @override
   Widget build(BuildContext context) {
     return _SceneBand(
       title: 'Opponent',
       trailing: '$handCount cards',
-      child: _OpponentArea(handCount: handCount, deckCount: deckCount),
+      child: KeyedSubtree(
+        key: anchorKey,
+        child: _OpponentArea(handCount: handCount, deckCount: deckCount),
+      ),
     );
   }
 }
@@ -771,27 +1081,35 @@ class _PlayerLane extends StatelessWidget {
     required this.hand,
     required this.deckCount,
     required this.selectedCardId,
+    required this.pendingCardId,
     required this.highlightedCardIds,
     required this.onSelectCard,
+    required this.anchorKey,
   });
 
   final List<GameCard> hand;
   final int deckCount;
   final String? selectedCardId;
+  final String? pendingCardId;
   final Set<String> highlightedCardIds;
   final ValueChanged<String>? onSelectCard;
+  final GlobalKey anchorKey;
 
   @override
   Widget build(BuildContext context) {
     return _SceneBand(
       title: 'Your cards',
       trailing: '$deckCount in deck',
-      child: _HandRow(
-        hand: hand,
-        deckCount: deckCount,
-        selectedCardId: selectedCardId,
-        highlightedCardIds: highlightedCardIds,
-        onSelectCard: onSelectCard,
+      child: KeyedSubtree(
+        key: anchorKey,
+        child: _HandRow(
+          hand: hand,
+          deckCount: deckCount,
+          selectedCardId: selectedCardId,
+          pendingCardId: pendingCardId,
+          highlightedCardIds: highlightedCardIds,
+          onSelectCard: onSelectCard,
+        ),
       ),
     );
   }
@@ -985,18 +1303,32 @@ class _GameResultPanel extends StatelessWidget {
 const double _cardWidth = 88;
 const double _cardHeight = 120;
 
+String _cardSemanticLabel(GameCard card) {
+  final shape = card.shape.name;
+  final pluralShape = card.count == 1 ? shape : '${shape}s';
+  return '${card.color.name}, ${card.count} $pluralShape';
+}
+
 class _PileStack extends StatelessWidget {
   const _PileStack({
     super.key,
     required this.label,
     required this.topCard,
+    required this.anchorKey,
     this.highlighted = false,
+    this.rejected = false,
+    this.shakeSequence = 0,
+    this.landingSequence = 0,
     this.onTap,
   });
 
   final String label;
   final GameCard topCard;
+  final GlobalKey anchorKey;
   final bool highlighted;
+  final bool rejected;
+  final int shakeSequence;
+  final int landingSequence;
   final VoidCallback? onTap;
 
   @override
@@ -1004,55 +1336,118 @@ class _PileStack extends StatelessWidget {
     const stackOffset = 4.0;
     final active = onTap != null;
 
-    return _AttentionPulse(
-      active: highlighted,
-      borderRadius: 20,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: active
-                ? _sprintYellow.withValues(alpha: 0.22)
-                : Colors.white.withValues(alpha: 0.36),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: active ? _sprintBlue : _sprintBlue.withValues(alpha: 0.18),
-              width: active ? 3 : 1.4,
+    final borderColor = rejected
+        ? const Color(0xFFD9364B)
+        : active
+        ? _sprintBlue
+        : _sprintBlue.withValues(alpha: 0.18);
+    return _ShakeOnChange(
+      sequence: rejected ? shakeSequence : 0,
+      child: _LandingPulseOnChange(
+        sequence: landingSequence,
+        child: _AttentionPulse(
+          active: highlighted,
+          borderRadius: 20,
+          child: KeyedSubtree(
+            key: anchorKey,
+            child: Semantics(
+              key: ValueKey(
+                '${label.toLowerCase().replaceAll(' ', '')}Semantics',
+              ),
+              button: true,
+              enabled: active,
+              liveRegion: rejected,
+              excludeSemantics: true,
+              label: '$label, ${_cardSemanticLabel(topCard)}',
+              value: rejected ? 'Move rejected' : 'Center pile',
+              hint: !active
+                  ? 'Select a card first'
+                  : 'Double tap to try the selected card',
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: BorderRadius.circular(18),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: rejected
+                        ? const Color(0xFFFFB6BF).withValues(alpha: 0.58)
+                        : active
+                        ? _sprintYellow.withValues(alpha: 0.22)
+                        : Colors.white.withValues(alpha: 0.36),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: borderColor,
+                      width: rejected || active ? 3 : 1.4,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            label,
+                            style: Theme.of(context).textTheme.labelMedium
+                                ?.copyWith(
+                                  color: _sprintBlue,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                          ),
+                          if (rejected) ...[
+                            const SizedBox(width: 5),
+                            Icon(
+                              Icons.block_rounded,
+                              key: const ValueKey('rejectedTargetIcon'),
+                              size: 17,
+                              color: borderColor,
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 7),
+                      SizedBox(
+                        width: _cardWidth + stackOffset * 1.5,
+                        height: _cardHeight + stackOffset * 1.5,
+                        child: Stack(
+                          children: [
+                            const Positioned(
+                              left: stackOffset,
+                              top: stackOffset,
+                              child: _CardBack(),
+                            ),
+                            Positioned(
+                              left: 0,
+                              top: 0,
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 220),
+                                switchInCurve: Curves.easeOutBack,
+                                transitionBuilder: (child, animation) =>
+                                    FadeTransition(
+                                      opacity: animation,
+                                      child: ScaleTransition(
+                                        scale: Tween(
+                                          begin: 0.88,
+                                          end: 1.0,
+                                        ).animate(animation),
+                                        child: child,
+                                      ),
+                                    ),
+                                child: KeyedSubtree(
+                                  key: ValueKey('pile-card-${topCard.cardId}'),
+                                  child: _CardFront(card: topCard),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                label,
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: _sprintBlue,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              const SizedBox(height: 7),
-              SizedBox(
-                width: _cardWidth + stackOffset * 1.5,
-                height: _cardHeight + stackOffset * 1.5,
-                child: Stack(
-                  children: [
-                    const Positioned(
-                      left: stackOffset,
-                      top: stackOffset,
-                      child: _CardBack(),
-                    ),
-                    Positioned(
-                      left: 0,
-                      top: 0,
-                      child: _CardFront(card: topCard),
-                    ),
-                  ],
-                ),
-              ),
-            ],
           ),
         ),
       ),
@@ -1061,7 +1456,7 @@ class _PileStack extends StatelessWidget {
 }
 
 const double _handSpacing = 6;
-const double _handCardMinWidth = 64;
+const double _handCardMinWidth = 48;
 const double _handCardMaxWidth = 90;
 
 Size _handCardSizeFor(double availableWidth, int itemCount) {
@@ -1077,6 +1472,7 @@ class _HandRow extends StatelessWidget {
     required this.hand,
     required this.deckCount,
     required this.selectedCardId,
+    required this.pendingCardId,
     required this.highlightedCardIds,
     required this.onSelectCard,
   });
@@ -1084,6 +1480,7 @@ class _HandRow extends StatelessWidget {
   final List<GameCard> hand;
   final int deckCount;
   final String? selectedCardId;
+  final String? pendingCardId;
   final Set<String> highlightedCardIds;
   final ValueChanged<String>? onSelectCard;
 
@@ -1105,6 +1502,7 @@ class _HandRow extends StatelessWidget {
                 width: cardSize.width,
                 height: cardSize.height,
                 selected: card.cardId == selectedCardId,
+                pending: card.cardId == pendingCardId,
                 highlighted: highlightedCardIds.contains(card.cardId),
                 onTap: onSelectCard == null
                     ? null
@@ -1168,6 +1566,7 @@ class _HandCardTile extends StatelessWidget {
     super.key,
     required this.card,
     this.selected = false,
+    this.pending = false,
     this.highlighted = false,
     this.onTap,
     this.width = _cardWidth,
@@ -1176,6 +1575,7 @@ class _HandCardTile extends StatelessWidget {
 
   final GameCard card;
   final bool selected;
+  final bool pending;
   final bool highlighted;
   final VoidCallback? onTap;
   final double width;
@@ -1183,54 +1583,99 @@ class _HandCardTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _AttentionPulse(
-      active: highlighted && !selected,
-      borderRadius: 20,
-      child: Transform.translate(
-        offset: selected ? const Offset(0, -10) : Offset.zero,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 170),
-            width: width,
-            height: height,
-            padding: EdgeInsets.all(selected ? 3 : 2),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: selected
-                    ? [_sprintYellow, _sprintOrange]
-                    : [
-                        Colors.white.withValues(alpha: 0.88),
-                        _sprintLavenderDeep.withValues(alpha: 0.7),
-                      ],
-              ),
-              borderRadius: BorderRadius.circular(18),
-              boxShadow: [
-                if (selected)
-                  BoxShadow(
-                    color: _sprintYellow.withValues(alpha: 0.48),
-                    blurRadius: 20,
-                    offset: const Offset(0, 10),
+    return Semantics(
+      button: true,
+      enabled: onTap != null,
+      selected: selected,
+      excludeSemantics: true,
+      label: _cardSemanticLabel(card),
+      value: pending
+          ? 'Move pending'
+          : selected
+          ? 'Selected'
+          : 'Not selected',
+      hint: pending
+          ? 'Waiting for the server'
+          : onTap == null
+          ? 'Move controls are disabled'
+          : selected
+          ? 'Double tap to deselect this card'
+          : 'Double tap to select this card',
+      child: _AttentionPulse(
+        active: highlighted && !selected,
+        borderRadius: 20,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 160),
+          opacity: pending ? 0.68 : 1,
+          child: Transform.translate(
+            offset: selected || pending ? const Offset(0, -10) : Offset.zero,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(16),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 170),
+                width: width,
+                height: height,
+                padding: EdgeInsets.all(selected ? 3 : 2),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: selected
+                        ? [_sprintYellow, _sprintOrange]
+                        : [
+                            Colors.white.withValues(alpha: 0.88),
+                            _sprintLavenderDeep.withValues(alpha: 0.7),
+                          ],
                   ),
-              ],
-            ),
-            child: Stack(
-              children: [
-                _CardFront(card: card, width: width - 6, height: height - 6),
-                if (selected)
-                  const Positioned(
-                    top: 6,
-                    right: 6,
-                    child: Icon(
-                      Icons.check_circle,
-                      color: _sprintBlue,
-                      size: 18,
+                  borderRadius: BorderRadius.circular(18),
+                  boxShadow: [
+                    if (selected || pending)
+                      BoxShadow(
+                        color: _sprintYellow.withValues(alpha: 0.48),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
+                      ),
+                  ],
+                ),
+                child: Stack(
+                  children: [
+                    _CardFront(
+                      card: card,
+                      width: width - 6,
+                      height: height - 6,
                     ),
-                  ),
-              ],
+                    if (pending)
+                      const Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Color(0x332C3192),
+                            borderRadius: BorderRadius.all(Radius.circular(14)),
+                          ),
+                          child: Center(
+                            child: SizedBox.square(
+                              dimension: 26,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 3,
+                                color: _sprintYellow,
+                              ),
+                            ),
+                          ),
+                        ),
+                      )
+                    else if (selected)
+                      const Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Icon(
+                          Icons.check_circle,
+                          color: _sprintBlue,
+                          size: 18,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
@@ -1257,6 +1702,7 @@ class _AttentionPulse extends StatefulWidget {
 class _AttentionPulseState extends State<_AttentionPulse>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  bool _reduceMotion = false;
 
   @override
   void initState() {
@@ -1265,15 +1711,25 @@ class _AttentionPulseState extends State<_AttentionPulse>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    if (widget.active) _controller.repeat(reverse: true);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    _syncAnimation();
   }
 
   @override
   void didUpdateWidget(covariant _AttentionPulse oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.active && !oldWidget.active) {
-      _controller.repeat(reverse: true);
-    } else if (!widget.active && oldWidget.active) {
+    if (widget.active != oldWidget.active) _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    if (widget.active && !_reduceMotion) {
+      if (!_controller.isAnimating) _controller.repeat(reverse: true);
+    } else {
       _controller
         ..stop()
         ..value = 0;
@@ -1317,6 +1773,1103 @@ class _AttentionPulseState extends State<_AttentionPulse>
       },
     );
   }
+}
+
+class _ShakeOnChange extends StatefulWidget {
+  const _ShakeOnChange({required this.sequence, required this.child});
+
+  final int sequence;
+  final Widget child;
+
+  @override
+  State<_ShakeOnChange> createState() => _ShakeOnChangeState();
+}
+
+class _ShakeOnChangeState extends State<_ShakeOnChange>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  bool _reduceMotion = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (_reduceMotion) _controller.stop();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ShakeOnChange oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_reduceMotion &&
+        widget.sequence != 0 &&
+        widget.sequence != oldWidget.sequence) {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_reduceMotion) return widget.child;
+    return AnimatedBuilder(
+      animation: _controller,
+      child: widget.child,
+      builder: (context, child) {
+        final offset =
+            math.sin(_controller.value * math.pi * 6) *
+            9 *
+            (1 - _controller.value);
+        return Transform.translate(offset: Offset(offset, 0), child: child);
+      },
+    );
+  }
+}
+
+class _LandingPulseOnChange extends StatefulWidget {
+  const _LandingPulseOnChange({required this.sequence, required this.child});
+
+  final int sequence;
+  final Widget child;
+
+  @override
+  State<_LandingPulseOnChange> createState() => _LandingPulseOnChangeState();
+}
+
+class _LandingPulseOnChangeState extends State<_LandingPulseOnChange>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  Timer? _staticTimer;
+  bool _reduceMotion = false;
+  bool _showStatic = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 320),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (_reduceMotion) _controller.stop();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LandingPulseOnChange oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.sequence == 0 || widget.sequence == oldWidget.sequence) return;
+    _staticTimer?.cancel();
+    if (_reduceMotion) {
+      _showStatic = true;
+      _staticTimer = Timer(const Duration(milliseconds: 420), () {
+        if (mounted) setState(() => _showStatic = false);
+      });
+    } else {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _staticTimer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_reduceMotion) {
+      return DecoratedBox(
+        key: ValueKey('landingPulse-${widget.sequence}'),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          border: _showStatic
+              ? Border.all(color: _sprintYellow, width: 4)
+              : null,
+        ),
+        child: widget.child,
+      );
+    }
+    return KeyedSubtree(
+      key: ValueKey('landingPulse-${widget.sequence}'),
+      child: AnimatedBuilder(
+        animation: _controller,
+        child: widget.child,
+        builder: (context, child) {
+          final pulse = math.sin(_controller.value * math.pi);
+          return Transform.scale(
+            scale: 1 + pulse * 0.055,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                boxShadow: pulse <= 0
+                    ? const <BoxShadow>[]
+                    : [
+                        BoxShadow(
+                          color: _sprintYellow.withValues(alpha: pulse * 0.62),
+                          blurRadius: 28 * pulse,
+                          spreadRadius: 5 * pulse,
+                        ),
+                      ],
+              ),
+              child: child,
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+enum _NetworkTier { hidden, degraded, poor }
+
+class _NetworkQualityIndicator extends StatefulWidget {
+  const _NetworkQualityIndicator({
+    required this.rttMs,
+    required this.sampleSequence,
+  });
+
+  final int? rttMs;
+  final int sampleSequence;
+
+  @override
+  State<_NetworkQualityIndicator> createState() =>
+      _NetworkQualityIndicatorState();
+}
+
+class _NetworkQualityIndicatorState extends State<_NetworkQualityIndicator> {
+  final List<int> _samples = <int>[];
+  _NetworkTier _tier = _NetworkTier.hidden;
+  int? _displayRttMs;
+  int _healthyReadings = 0;
+  int _degradedReadings = 0;
+  Timer? _freshnessTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _record(widget.rttMs);
+  }
+
+  @override
+  void didUpdateWidget(covariant _NetworkQualityIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.rttMs != oldWidget.rttMs ||
+        widget.sampleSequence != oldWidget.sampleSequence) {
+      _record(widget.rttMs);
+    }
+  }
+
+  void _record(int? value) {
+    _freshnessTimer?.cancel();
+    if (value == null) {
+      _freshnessTimer = null;
+      _samples.clear();
+      _tier = _NetworkTier.hidden;
+      _displayRttMs = null;
+      _healthyReadings = 0;
+      _degradedReadings = 0;
+      return;
+    }
+    _freshnessTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted) return;
+      setState(() {
+        _freshnessTimer = null;
+        _samples.clear();
+        _tier = _NetworkTier.hidden;
+        _displayRttMs = null;
+        _healthyReadings = 0;
+        _degradedReadings = 0;
+      });
+    });
+    _samples
+      ..add(value)
+      ..removeRange(0, math.max(0, _samples.length - 3));
+    final average = _samples.reduce((a, b) => a + b) / _samples.length;
+    _displayRttMs = average.round();
+    if (value >= 400 || average >= 400) {
+      _tier = _NetworkTier.poor;
+      _healthyReadings = 0;
+      _degradedReadings += 1;
+    } else if (average >= 200) {
+      _healthyReadings = 0;
+      _degradedReadings += 1;
+      if (_degradedReadings >= 2 || _tier != _NetworkTier.hidden) {
+        _tier = _NetworkTier.degraded;
+      }
+    } else if (average < 180) {
+      _degradedReadings = 0;
+      _healthyReadings += 1;
+      if (_healthyReadings >= 3) {
+        _tier = _NetworkTier.hidden;
+        _freshnessTimer?.cancel();
+        _freshnessTimer = null;
+      }
+    } else {
+      _degradedReadings = 0;
+      _healthyReadings += 1;
+      if (_healthyReadings >= 3) {
+        _tier = _NetworkTier.hidden;
+        _freshnessTimer?.cancel();
+        _freshnessTimer = null;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _freshnessTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_tier == _NetworkTier.hidden) return const SizedBox.shrink();
+    final poor = _tier == _NetworkTier.poor;
+    final rttMs = _displayRttMs ?? widget.rttMs ?? 0;
+    final color = poor ? const Color(0xFFD9364B) : const Color(0xFFB26A00);
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: Tooltip(
+        message: poor
+            ? 'Poor connection ($rttMs ms)'
+            : 'Connection is slower than usual ($rttMs ms)',
+        child: Semantics(
+          label:
+              '${poor ? 'Poor' : 'Degraded'} connection, '
+              '$rttMs milliseconds round-trip latency',
+          child: Container(
+            key: const ValueKey('degradedConnectionIndicator'),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.13),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: color.withValues(alpha: 0.45)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  poor ? Icons.wifi_off_rounded : Icons.wifi_2_bar_rounded,
+                  size: 17,
+                  color: color,
+                ),
+                if (poor) ...[
+                  const SizedBox(width: 5),
+                  Text(
+                    'Poor',
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 5),
+                Text(
+                  '$rttMs ms',
+                  key: const ValueKey('degradedConnectionRtt'),
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GameplayTransitionOverlay extends StatefulWidget {
+  const _GameplayTransitionOverlay({
+    required this.transitions,
+    required this.roundSequence,
+    required this.stateVersion,
+    required this.playerAnchorKey,
+    required this.opponentAnchorKey,
+    required this.pile1AnchorKey,
+    required this.pile2AnchorKey,
+    required this.onBusyChanged,
+    required this.onLanded,
+  });
+
+  final List<GameStateTransition> transitions;
+  final int roundSequence;
+  final int stateVersion;
+  final GlobalKey playerAnchorKey;
+  final GlobalKey opponentAnchorKey;
+  final GlobalKey pile1AnchorKey;
+  final GlobalKey pile2AnchorKey;
+  final ValueChanged<bool> onBusyChanged;
+  final ValueChanged<Set<GamePileId>> onLanded;
+
+  @override
+  State<_GameplayTransitionOverlay> createState() =>
+      _GameplayTransitionOverlayState();
+}
+
+class _GameplayTransitionOverlayState extends State<_GameplayTransitionOverlay>
+    with SingleTickerProviderStateMixin {
+  static const int _maximumPendingBatches = 6;
+  static const int _maximumRememberedSequences = 32;
+  static const Duration _flightDuration = Duration(milliseconds: 350);
+  final GlobalKey _overlayKey = GlobalKey(debugLabel: 'flight-overlay');
+  final ListQueue<_TransitionBatch> _pending = ListQueue<_TransitionBatch>();
+  final LinkedHashSet<_TransitionBatchIdentity> _seenBatchIdentities =
+      LinkedHashSet<_TransitionBatchIdentity>();
+  late final AnimationController _controller;
+  Timer? _reducedMotionTimer;
+  _TransitionBatch? _current;
+  _FlightGeometry? _geometry;
+  bool _reduceMotion = false;
+  bool _reportedBusy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: _flightDuration)
+      ..addStatusListener(_handleAnimationStatus);
+    _enqueue(
+      roundSequence: widget.roundSequence,
+      stateVersion: widget.stateVersion,
+      transitions: widget.transitions,
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (_reduceMotion == reduceMotion) return;
+    _reduceMotion = reduceMotion;
+    if (_reduceMotion && _current != null) {
+      _controller.stop();
+      _showReducedMotionFeedback();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _GameplayTransitionOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _enqueue(
+      roundSequence: widget.roundSequence,
+      stateVersion: widget.stateVersion,
+      transitions: widget.transitions,
+    );
+  }
+
+  void _enqueue({
+    required int roundSequence,
+    required int stateVersion,
+    required List<GameStateTransition> transitions,
+  }) {
+    final identity = _TransitionBatchIdentity(
+      roundSequence: roundSequence,
+      stateVersion: stateVersion,
+    );
+    if (transitions.isEmpty || _seenBatchIdentities.contains(identity)) return;
+    _seenBatchIdentities.add(identity);
+    while (_seenBatchIdentities.length > _maximumRememberedSequences) {
+      _seenBatchIdentities.remove(_seenBatchIdentities.first);
+    }
+    final compressedLandings = <GamePileId>{};
+    while (_pending.length >= _maximumPendingBatches) {
+      final compressed = _pending.removeFirst();
+      compressedLandings.addAll(
+        compressed.transitions.map((transition) => transition.targetPileId),
+      );
+    }
+    if (compressedLandings.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onLanded(compressedLandings);
+      });
+    }
+    _pending.add(
+      _TransitionBatch(
+        identity: identity,
+        transitions: List<GameStateTransition>.unmodifiable(transitions),
+      ),
+    );
+    _setReportedBusy(true);
+    if (_current == null) _startNextBatch();
+  }
+
+  void _startNextBatch() {
+    if (!mounted || _current != null) return;
+    if (_pending.isEmpty) {
+      _setReportedBusy(false);
+      return;
+    }
+    _current = _pending.removeFirst();
+    _geometry = null;
+    if (_reduceMotion) {
+      _showReducedMotionFeedback();
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _current == null || _reduceMotion) return;
+      final geometry = _measureGeometry();
+      if (geometry == null) {
+        _completeCurrentBatch();
+        return;
+      }
+      setState(() => _geometry = geometry);
+      _controller.forward(from: 0);
+    });
+  }
+
+  _FlightGeometry? _measureGeometry() {
+    final batch = _current;
+    if (batch == null) return null;
+    final overlayBox =
+        _overlayKey.currentContext?.findRenderObject() as RenderBox?;
+    if (overlayBox == null || !overlayBox.hasSize) return null;
+
+    Offset? centerOf(GlobalKey key) {
+      final box = key.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return null;
+      final globalCenter = box.localToGlobal(box.size.center(Offset.zero));
+      return overlayBox.globalToLocal(globalCenter);
+    }
+
+    final player = centerOf(widget.playerAnchorKey);
+    final opponent = centerOf(widget.opponentAnchorKey);
+    final pile1 = centerOf(widget.pile1AnchorKey);
+    final pile2 = centerOf(widget.pile2AnchorKey);
+    // A fast player can scroll a lane just outside ListView's cache before the
+    // confirmed state arrives. Prefer the real anchors, then use responsive
+    // viewport positions so decorative feedback is not silently discarded.
+    final horizontalCenter = overlayBox.size.width / 2;
+    final tableY = overlayBox.size.height * 0.48;
+    return _FlightGeometry(
+      player: player ?? Offset(horizontalCenter, overlayBox.size.height + 45),
+      opponent: opponent ?? Offset(horizontalCenter, -45),
+      pile1: pile1 ?? Offset(overlayBox.size.width * 0.38, tableY),
+      pile2: pile2 ?? Offset(overlayBox.size.width * 0.62, tableY),
+    );
+  }
+
+  void _showReducedMotionFeedback() {
+    _controller.stop();
+    _reducedMotionTimer?.cancel();
+    if (mounted) setState(() => _geometry = null);
+    _reducedMotionTimer = Timer(const Duration(milliseconds: 320), () {
+      if (mounted) _completeCurrentBatch();
+    });
+  }
+
+  void _handleAnimationStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) _completeCurrentBatch();
+  }
+
+  void _completeCurrentBatch() {
+    final batch = _current;
+    if (!mounted || batch == null) return;
+    final landedPiles = batch.transitions
+        .map((transition) => transition.targetPileId)
+        .toSet();
+    widget.onLanded(landedPiles);
+    setState(() {
+      _current = null;
+      _geometry = null;
+    });
+    _startNextBatch();
+  }
+
+  void _setReportedBusy(bool busy) {
+    if (_reportedBusy == busy) return;
+    _reportedBusy = busy;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _reportedBusy == busy) widget.onBusyChanged(busy);
+    });
+  }
+
+  @override
+  void dispose() {
+    _reducedMotionTimer?.cancel();
+    _controller.removeStatusListener(_handleAnimationStatus);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final batch = _current;
+    final semanticsLabel = batch == null
+        ? null
+        : batch.transitions.length == 1
+        ? batch.transitions.single.actor == GameStateTransitionActor.opponent
+              ? 'Opponent played a card'
+              : 'Your card was played'
+        : '${batch.transitions.length} cards were played';
+    return IgnorePointer(
+      child: Semantics(
+        liveRegion: batch != null,
+        label: semanticsLabel,
+        excludeSemantics: true,
+        child: SizedBox.expand(
+          key: _overlayKey,
+          child: batch == null
+              ? const SizedBox.shrink()
+              : _reduceMotion
+              ? Align(
+                  alignment: Alignment.topCenter,
+                  child: SafeArea(
+                    child: Container(
+                      key: const ValueKey('reducedMotionMoveFeedback'),
+                      margin: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _sprintBlue,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        semanticsLabel ?? 'Card played',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+              : _geometry == null
+              ? const SizedBox.shrink()
+              : ClipRect(
+                  child: AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, child) => Stack(
+                      children: [
+                        for (
+                          var index = 0;
+                          index < batch.transitions.length;
+                          index++
+                        )
+                          _buildFlight(
+                            batch.transitions[index],
+                            batch.identity,
+                            index,
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFlight(
+    GameStateTransition transition,
+    _TransitionBatchIdentity identity,
+    int index,
+  ) {
+    final geometry = _geometry!;
+    final progress = _controller.value.clamp(0.0, 1.0);
+    if (progress <= 0 || progress >= 1) return const SizedBox.shrink();
+    final eased = Curves.easeInOutCubic.transform(progress);
+    final start = transition.actor == GameStateTransitionActor.self
+        ? geometry.player
+        : geometry.opponent;
+    final end = transition.targetPileId == GamePileId.pile1
+        ? geometry.pile1
+        : geometry.pile2;
+    final position = Offset.lerp(start, end, eased)!;
+    final opacity = progress > 0.88 ? (1 - progress) / 0.12 : 1.0;
+    final revealOpponent =
+        transition.actor == GameStateTransitionActor.self || progress >= 0.34;
+
+    return Positioned(
+      key: ValueKey(
+        'transitionFlight-${identity.roundSequence}-'
+        '${identity.stateVersion}-$index',
+      ),
+      left: position.dx - 33,
+      top: position.dy - 45,
+      child: Opacity(
+        opacity: opacity.clamp(0.0, 1.0),
+        child: Transform.rotate(
+          angle:
+              (1 - eased) *
+              (transition.targetPileId == GamePileId.pile1 ? -0.16 : 0.16),
+          child: Transform.scale(
+            scale: 0.76 + math.sin(progress * math.pi) * 0.22,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (transition.actor == GameStateTransitionActor.opponent)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 5),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _sprintBlue,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Text(
+                      'OPPONENT',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ),
+                if (revealOpponent)
+                  _CardFront(card: transition.card, width: 66, height: 90)
+                else
+                  const _CardBack(width: 66, height: 90),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TransitionBatch {
+  const _TransitionBatch({required this.identity, required this.transitions});
+
+  final _TransitionBatchIdentity identity;
+  final List<GameStateTransition> transitions;
+}
+
+class _TransitionBatchIdentity {
+  const _TransitionBatchIdentity({
+    required this.roundSequence,
+    required this.stateVersion,
+  });
+
+  final int roundSequence;
+  final int stateVersion;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _TransitionBatchIdentity &&
+      other.roundSequence == roundSequence &&
+      other.stateVersion == stateVersion;
+
+  @override
+  int get hashCode => Object.hash(roundSequence, stateVersion);
+}
+
+class _FlightGeometry {
+  const _FlightGeometry({
+    required this.player,
+    required this.opponent,
+    required this.pile1,
+    required this.pile2,
+  });
+
+  final Offset player;
+  final Offset opponent;
+  final Offset pile1;
+  final Offset pile2;
+}
+
+class _PileResetPresentation extends StatefulWidget {
+  const _PileResetPresentation({required this.sequence, required this.active});
+
+  final int sequence;
+  final bool active;
+
+  @override
+  State<_PileResetPresentation> createState() => _PileResetPresentationState();
+}
+
+class _PileResetPresentationState extends State<_PileResetPresentation>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  bool _reduceMotion = false;
+  int? _playedSequence;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 620),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    _syncPresentation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _PileResetPresentation oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncPresentation();
+  }
+
+  void _syncPresentation() {
+    if (!widget.active) {
+      _controller
+        ..stop()
+        ..value = 0;
+      return;
+    }
+    if (_playedSequence == widget.sequence) return;
+    _playedSequence = widget.sequence;
+    if (_reduceMotion) {
+      _controller.value = 1;
+    } else {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.active) return const SizedBox.shrink();
+    return IgnorePointer(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: SafeArea(
+          child: Semantics(
+            liveRegion: true,
+            container: true,
+            label: 'No legal moves. Center piles were reshuffled.',
+            excludeSemantics: true,
+            child: Container(
+              key: const ValueKey('pileResetPresentation'),
+              margin: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.96),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: _sprintYellow, width: 2),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x402C3192),
+                    blurRadius: 22,
+                    offset: Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, child) => Transform.rotate(
+                      angle: _reduceMotion
+                          ? 0
+                          : _controller.value * math.pi * 2,
+                      child: child,
+                    ),
+                    child: const Icon(
+                      Icons.autorenew_rounded,
+                      size: 28,
+                      color: _sprintBlue,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Flexible(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'PILES RESET',
+                          style: TextStyle(
+                            color: _sprintBlue,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 1.4,
+                          ),
+                        ),
+                        Text(
+                          'No moves—keep playing on the new cards.',
+                          style: TextStyle(
+                            color: _sprintMuted,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _ResultOutcome { victory, defeat, neutral }
+
+class _ResultPresentation extends StatefulWidget {
+  const _ResultPresentation({
+    required this.outcome,
+    required this.forfeit,
+    required this.elapsedTimeMs,
+    required this.onStarted,
+    required this.onFinished,
+  });
+
+  final _ResultOutcome outcome;
+  final bool forfeit;
+  final int elapsedTimeMs;
+  final VoidCallback? onStarted;
+  final VoidCallback onFinished;
+
+  @override
+  State<_ResultPresentation> createState() => _ResultPresentationState();
+}
+
+class _ResultPresentationState extends State<_ResultPresentation>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  Timer? _reducedMotionTimer;
+  bool _started = false;
+  bool _finished = false;
+
+  bool get _won => widget.outcome == _ResultOutcome.victory;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1700),
+    )..addStatusListener(_handleStatus);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onStarted?.call();
+    });
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (reduceMotion) {
+      _reducedMotionTimer = Timer(const Duration(milliseconds: 1050), _finish);
+    } else {
+      _controller.forward();
+    }
+  }
+
+  void _handleStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) _finish();
+  }
+
+  void _finish() {
+    if (!mounted || _finished) return;
+    _finished = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onFinished();
+    });
+  }
+
+  @override
+  void dispose() {
+    _reducedMotionTimer?.cancel();
+    _controller.removeStatusListener(_handleStatus);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = switch (widget.outcome) {
+      _ResultOutcome.victory => 'VICTORY',
+      _ResultOutcome.defeat => 'DEFEAT',
+      _ResultOutcome.neutral => 'MATCH COMPLETE',
+    };
+    final semantics = widget.forfeit
+        ? _won
+              ? 'Victory. Opponent disconnected.'
+              : widget.outcome == _ResultOutcome.defeat
+              ? 'Defeat by disconnect timeout.'
+              : 'Match completed after a disconnect.'
+        : '$title. Match time ${formatElapsedTimeMs(widget.elapsedTimeMs)}.';
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    Widget surface(double value, {required bool animated}) {
+      final opacity = !animated
+          ? 1.0
+          : value < 0.12
+          ? value / 0.12
+          : value > 0.82
+          ? (1 - value) / 0.18
+          : 1.0;
+      final background = switch (widget.outcome) {
+        _ResultOutcome.victory => const Color(0xFF292E87),
+        _ResultOutcome.defeat => const Color(0xFF26313D),
+        _ResultOutcome.neutral => const Color(0xFF394667),
+      };
+      final icon = switch (widget.outcome) {
+        _ResultOutcome.victory => Icons.emoji_events_rounded,
+        _ResultOutcome.defeat => Icons.sports_esports_rounded,
+        _ResultOutcome.neutral => Icons.flag_circle_rounded,
+      };
+      return Opacity(
+        opacity: opacity.clamp(0.0, 1.0),
+        child: ColoredBox(
+          key: const ValueKey('resultPresentation'),
+          color: background.withValues(alpha: 0.94),
+          child: Stack(
+            children: [
+              if (_won && !widget.forfeit && animated)
+                const Positioned.fill(
+                  child: CustomPaint(painter: _CelebrationPainter()),
+                ),
+              Center(
+                child: Transform.scale(
+                  scale: !animated
+                      ? 1
+                      : 0.82 +
+                            Curves.easeOutBack.transform(
+                                  math.min(value / 0.32, 1),
+                                ) *
+                                0.18,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        icon,
+                        color: _won ? _sprintYellow : const Color(0xFFDDE4EC),
+                        size: 78,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        title,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _won ? _sprintYellow : Colors.white,
+                          fontSize: title.length > 10 ? 30 : 42,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: title.length > 10 ? 2 : 4,
+                          shadows: const [
+                            Shadow(color: Colors.black45, blurRadius: 15),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        widget.forfeit
+                            ? _won
+                                  ? 'Opponent disconnected'
+                                  : widget.outcome == _ResultOutcome.defeat
+                                  ? 'Connection timeout'
+                                  : 'Match ended'
+                            : 'Time ${formatElapsedTimeMs(widget.elapsedTimeMs)}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return AbsorbPointer(
+      key: const ValueKey('resultPresentationBlocker'),
+      absorbing: true,
+      child: BlockSemantics(
+        blocking: true,
+        child: Semantics(
+          liveRegion: true,
+          scopesRoute: true,
+          explicitChildNodes: true,
+          container: true,
+          label: semantics,
+          excludeSemantics: true,
+          child: reduceMotion
+              ? surface(1, animated: false)
+              : AnimatedBuilder(
+                  animation: _controller,
+                  builder: (context, child) =>
+                      surface(_controller.value, animated: true),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CelebrationPainter extends CustomPainter {
+  const _CelebrationPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const colors = <Color>[
+      _sprintYellow,
+      _sprintOrange,
+      Color(0xFF62D6C5),
+      Colors.white,
+    ];
+    final paint = Paint();
+    for (var index = 0; index < 28; index++) {
+      paint.color = colors[index % colors.length].withValues(alpha: 0.78);
+      final x = ((index * 73) % 101) / 100 * size.width;
+      final y = ((index * 47) % 89) / 88 * size.height;
+      canvas.save();
+      canvas.translate(x, y);
+      canvas.rotate(index * 0.71);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: 9, height: 20),
+          const Radius.circular(2),
+        ),
+        paint,
+      );
+      canvas.restore();
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CelebrationPainter oldDelegate) => false;
 }
 
 class _DeckPile extends StatelessWidget {
@@ -1769,27 +3322,275 @@ class _FeedbackPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _AlertPanel(
-      icon: Icons.warning_rounded,
-      message: message,
-      background: const Color(0xFFFFD1D1),
-      foreground: const Color(0xFF3F1111),
+    return Semantics(
+      key: const ValueKey('moveFeedbackSemantics'),
+      liveRegion: true,
+      container: true,
+      label: message,
+      excludeSemantics: true,
+      child: _AlertPanel(
+        icon: Icons.warning_rounded,
+        message: message,
+        background: const Color(0xFFFFD1D1),
+        foreground: const Color(0xFF3F1111),
+      ),
     );
   }
 }
 
-class _ConnectionPanel extends StatelessWidget {
-  const _ConnectionPanel({required this.message});
+class _LocalReconnectOverlay extends StatelessWidget {
+  const _LocalReconnectOverlay({
+    required this.remainingSeconds,
+    required this.expired,
+    required this.onRetry,
+    required this.onReturnToMenu,
+  });
 
-  final String message;
+  final int? remainingSeconds;
+  final bool expired;
+  final VoidCallback? onRetry;
+  final VoidCallback? onReturnToMenu;
 
   @override
   Widget build(BuildContext context) {
-    return _AlertPanel(
-      icon: Icons.wifi_off,
-      message: message,
-      background: const Color(0xFFFFE2A8),
-      foreground: const Color(0xFF3A2500),
+    final seconds = math.max(0, remainingSeconds ?? 0);
+    final label = expired
+        ? 'Could not reconnect to the match.'
+        : 'Reconnecting to the match. $seconds seconds remaining.';
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: SafeArea(
+        minimum: const EdgeInsets.all(16),
+        child: Semantics(
+          liveRegion: true,
+          container: true,
+          label: label,
+          excludeSemantics: !expired,
+          child: Material(
+            key: const ValueKey('localReconnectOverlay'),
+            color: const Color(0xFF20265F),
+            elevation: 16,
+            borderRadius: BorderRadius.circular(22),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        if (expired)
+                          const Icon(
+                            Icons.cloud_off_rounded,
+                            color: _sprintYellow,
+                          )
+                        else
+                          const SizedBox.square(
+                            dimension: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              color: _sprintYellow,
+                            ),
+                          ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            expired
+                                ? 'Could not reconnect'
+                                : 'Reconnecting… $seconds s',
+                            key: const ValueKey('localReconnectStatus'),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (expired) ...[
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton(
+                              key: const ValueKey('retryReconnectButton'),
+                              onPressed: onRetry,
+                              child: const Text('Try again'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton(
+                              key: const ValueKey('returnToMenuButton'),
+                              onPressed: onReturnToMenu,
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                              ),
+                              child: const Text('Main menu'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ConnectionPanel extends StatefulWidget {
+  const _ConnectionPanel({
+    required this.message,
+    required this.disconnectDeadlineMs,
+    required this.serverTimeMs,
+    required this.networkRttMs,
+  });
+
+  final String message;
+  final int? disconnectDeadlineMs;
+  final int? serverTimeMs;
+  final int? networkRttMs;
+
+  @override
+  State<_ConnectionPanel> createState() => _ConnectionPanelState();
+}
+
+class _ConnectionPanelState extends State<_ConnectionPanel>
+    with SingleTickerProviderStateMixin {
+  late final Ticker _deadlineTicker;
+  int? _anchorRemainingMs;
+  int? _remainingSeconds;
+  Duration _deadlineElapsed = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _deadlineTicker = createTicker(_handleDeadlineTick);
+    _configureDeadline();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConnectionPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.disconnectDeadlineMs != widget.disconnectDeadlineMs ||
+        oldWidget.serverTimeMs != widget.serverTimeMs ||
+        oldWidget.networkRttMs != widget.networkRttMs) {
+      _configureDeadline();
+    }
+  }
+
+  void _configureDeadline() {
+    _deadlineTicker.stop();
+    final deadlineMs = widget.disconnectDeadlineMs;
+    if (deadlineMs == null) {
+      _anchorRemainingMs = null;
+      _remainingSeconds = null;
+      _deadlineElapsed = Duration.zero;
+      return;
+    }
+    final serverTimeMs = widget.serverTimeMs;
+    final remainingFromServer = serverTimeMs == null
+        ? deadlineMs - DateTime.now().millisecondsSinceEpoch
+        : deadlineMs - serverTimeMs;
+    final oneWayCompensationMs = ((widget.networkRttMs ?? 0) / 2)
+        .round()
+        .clamp(0, 500)
+        .toInt();
+    _anchorRemainingMs = math.max(
+      0,
+      remainingFromServer - oneWayCompensationMs,
+    );
+    _deadlineElapsed = Duration.zero;
+    _updateRemaining();
+    if ((_remainingSeconds ?? 0) == 0) return;
+    _deadlineTicker.start();
+  }
+
+  void _handleDeadlineTick(Duration elapsed) {
+    if (!mounted) return;
+    _deadlineElapsed = elapsed;
+    final previous = _remainingSeconds;
+    _updateRemaining();
+    if (_remainingSeconds != previous) setState(() {});
+  }
+
+  void _updateRemaining() {
+    final anchorRemainingMs = _anchorRemainingMs;
+    if (anchorRemainingMs == null) {
+      _remainingSeconds = null;
+      return;
+    }
+    final milliseconds = math.max(
+      0,
+      anchorRemainingMs - _deadlineElapsed.inMilliseconds,
+    );
+    _remainingSeconds = (milliseconds / 1000).ceil();
+    if (_remainingSeconds == 0) _deadlineTicker.stop();
+  }
+
+  @override
+  void dispose() {
+    _deadlineTicker.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seconds = _remainingSeconds;
+    final secondsLabel = seconds == 1 ? '1 second' : '$seconds seconds';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _AlertPanel(
+          icon: Icons.wifi_off,
+          message: widget.message,
+          background: const Color(0xFFFFE2A8),
+          foreground: const Color(0xFF3A2500),
+        ),
+        if (seconds != null)
+          Semantics(
+            liveRegion: seconds <= 10 || seconds % 5 == 0,
+            label: '$secondsLabel remain for reconnection',
+            child: Container(
+              key: const ValueKey('reconnectCountdown'),
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: seconds <= 10
+                    ? const Color(0xFFFFD1D1)
+                    : const Color(0xFFFFF1CF),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.timer_outlined,
+                    size: 20,
+                    color: seconds <= 10
+                        ? const Color(0xFF9C1D32)
+                        : const Color(0xFF7B5200),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '$secondsLabel until the match is forfeited',
+                      key: const ValueKey('reconnectCountdownValue'),
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

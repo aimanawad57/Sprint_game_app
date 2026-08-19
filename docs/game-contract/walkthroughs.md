@@ -32,7 +32,9 @@ Result:
 5. The server appends `card_012` to `pile_1`.
 6. The server draws one replacement from Player A's private deck.
 7. The server increments `stateVersion` to 9.
-8. Each player receives their own private state view.
+8. Each player receives their own private state view with one confirmed
+   `card_played` transition. Player A sees `actor: "self"`; Player B sees
+   `actor: "opponent"`. Neither payload exposes an actor user ID.
 
 ## 2. Illegal move
 
@@ -60,19 +62,24 @@ Initial facts:
 
 ```text
 stateVersion = 12
-Both players submit a move for pile_1 before the next match tick.
+Player A submits a valid move for pile_1.
+Player B submits a valid move for pile_2 inside the same fairness window.
 ```
 
 Result:
 
-1. Nakama processes the first message against version 12.
-2. If valid, the first card becomes the top of `pile_1` and the version becomes 13.
-3. Nakama processes the second message against the updated pile top.
-4. A submitted version of 12 does not automatically reject the second move.
-5. If the second card matches the new top, it is accepted and the version becomes 14.
-6. Otherwise it is rejected and the version remains 13.
+1. Nakama validates and queues both candidates against version 12.
+2. When the fairness window closes, both moves are revalidated.
+3. Because the moves target different piles, both are applied in
+   reaction-adjusted response-time order.
+4. The batch increments `stateVersion` once, to 13.
+5. Each private state view contains two ordered `card_played` transitions.
+6. Each recipient sees its own transition as `self` and the other transition as
+   `opponent`.
 
-  (We will see if we face problems with this decision or there is better logic)
+If both candidates target the same pile, only the reaction-adjusted winner is
+applied. The losing candidate receives `stale_move` and is not included in the
+transition array.
 
 ## 4. Final move
 
@@ -93,4 +100,29 @@ Result:
 5. Match status becomes `finished`.
 6. The state version increments.
 7. Both players receive `gameEnded` with their appropriate private views.
-8. Later move submissions are rejected with `game_finished`.
+8. The final private views include the winning `card_played` transition so the
+   placement can finish before the result presentation.
+9. Later move submissions are rejected with `game_finished`.
+
+## 5. Reconnect countdown
+
+Initial facts:
+
+```text
+Player B disconnects during an active round.
+disconnectTimeout = 30 seconds
+```
+
+Result:
+
+1. Nakama records Player B's disconnect timestamp.
+2. Opcode `15` includes `disconnectGraceMs: 30000`, `serverTimeMs`, and the
+   absolute `disconnectDeadlineMs`.
+3. Both clients pause move controls; a connected client may render the remaining
+   time using the shared server deadline.
+4. If Player B reconnects in time, a new opcode `15` carries a null deadline and
+   Player B receives a private resynchronization snapshot with no transitions.
+   That targeted send refreshes Player B's reaction-time anchor without changing
+   Player A's anchor.
+5. If the deadline expires, only Nakama decides the outcome and sends opcode
+   `14`; clients never declare the forfeit from their local timer.

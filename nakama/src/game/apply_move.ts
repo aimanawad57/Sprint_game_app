@@ -50,7 +50,18 @@ type PendingMoveBatchResult = {
   changed: boolean;
   gameEnded: boolean;
   acceptedPlayerIds: string[];
+  transitions: AppliedCardTransition[];
   rejections: MoveRejectedResult[];
+};
+
+// Internal form of a confirmed public transition. playerId never leaves the
+// server: buildPlayerStateView maps it to the viewer-relative self/opponent
+// actor before serializing a private snapshot.
+type AppliedCardTransition = {
+  type: "card_played";
+  playerId: string;
+  card: Card;
+  targetPileId: PileId;
 };
 
 function decodeMatchMessageData(data: ArrayBuffer | string | null): string {
@@ -145,32 +156,36 @@ type MoveTiming = {
   networkRttEstimateMs: number | null;
 };
 
-// Reconstructs when the player actually reacted, on the server's clock: the
-// broadcast instant plus the client-measured reaction time. The reaction
-// claim is clamped to the server-observed elapsed time since the broadcast
+// Reconstructs when the player actually reacted, on the server's clock: that
+// player's last private state-send instant plus the client-measured reaction
+// time. The reaction claim is clamped to the server-observed elapsed time
+// since that send
 // (network transit cannot be negative), so a claim cannot place the move
 // before physics allows. It also yields a network round-trip estimate
 // (elapsed minus reaction) for adaptive window sizing. Compensation only
 // applies when the move responds to the current state version; otherwise the
-// reaction was measured from an older broadcast and arrival time is used.
+// reaction was measured from an older state view and arrival time is used.
 function resolveMoveTiming(
   state: SprintMatchState,
+  player: PlayerMatchState,
   payload: SubmitMovePayload,
   receivedAtMs: number
 ): MoveTiming {
-  const broadcastAtMs = state.lastBroadcastAtMs;
+  const stateSentAtMs = player.lastStateSentAtMs;
   if (
-    broadcastAtMs === null ||
+    typeof stateSentAtMs !== "number" ||
+    !isFinite(stateSentAtMs) ||
+    stateSentAtMs < 0 ||
     payload.reactionTimeMs === null ||
     payload.expectedStateVersion !== state.stateVersion
   ) {
     return {effectiveResponseTimeMs: receivedAtMs, networkRttEstimateMs: null};
   }
 
-  const elapsedMs = Math.max(0, receivedAtMs - broadcastAtMs);
+  const elapsedMs = Math.max(0, receivedAtMs - stateSentAtMs);
   const clampedReactionMs = Math.min(payload.reactionTimeMs, elapsedMs);
   return {
-    effectiveResponseTimeMs: broadcastAtMs + clampedReactionMs,
+    effectiveResponseTimeMs: stateSentAtMs + clampedReactionMs,
     networkRttEstimateMs: Math.max(0, elapsedMs - clampedReactionMs)
   };
 }
@@ -376,7 +391,7 @@ function validateSubmitMovePayload(
     );
   }
 
-  const timing = resolveMoveTiming(state, payload, receivedAtMs);
+  const timing = resolveMoveTiming(state, player, payload, receivedAtMs);
   return {
     accepted: true,
     move: {
@@ -442,7 +457,7 @@ function validatePendingSubmitMove(
 function moveCardWithoutVersionIncrement(
   state: SprintMatchState,
   move: ValidatedSubmitMove
-): void {
+): Card {
   const player = state.players[move.playerId];
   const targetPile = state.centerPiles[move.payload.targetPileId];
   const cardIndex = findCardInHand(player, move.payload.card_id);
@@ -451,6 +466,7 @@ function moveCardWithoutVersionIncrement(
   player.hand.splice(cardIndex, 1);
   targetPile.push(playedCard);
   drawReplacementIfAvailable(player);
+  return playedCard;
 }
 
 function applyValidatedSubmitMove(
@@ -606,6 +622,7 @@ function applyPendingSubmitMoveBatch(
     changed: false,
     gameEnded: false,
     acceptedPlayerIds: [],
+    transitions: [],
     rejections: []
   };
   const validMoves: ValidatedSubmitMove[] = [];
@@ -653,8 +670,19 @@ function applyPendingSubmitMoveBatch(
         return;
       }
 
-      moveCardWithoutVersionIncrement(state, move);
+      const playedCard = moveCardWithoutVersionIncrement(state, move);
       result.acceptedPlayerIds.push(move.playerId);
+      result.transitions.push({
+        type: "card_played",
+        playerId: move.playerId,
+        card: {
+          card_id: playedCard.card_id,
+          color: playedCard.color,
+          shape: playedCard.shape,
+          count: playedCard.count
+        },
+        targetPileId: move.payload.targetPileId
+      });
     });
 
   if (result.acceptedPlayerIds.length === 0) {

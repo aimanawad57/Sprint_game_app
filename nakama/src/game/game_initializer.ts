@@ -199,6 +199,8 @@ function initializeRematchRound(
     player.deck = [];
     player.disconnectedAtMs = null;
     player.rttEstimateMs = null;
+    player.rttSampleSequence = 0;
+    player.lastStateSentAtMs = null;
   });
   state.centerPiles = {pile_1: [], pile_2: []};
   state.status = MatchStatus.Waiting;
@@ -209,7 +211,6 @@ function initializeRematchRound(
   state.endedAtMs = null;
   state.resultPersistencePending = false;
   state.resultPersisted = false;
-  state.lastBroadcastAtMs = null;
   state.pendingMoves = [];
   state.nextPendingMoveSequence = 0;
   state.nextTieBreakerPlayerId = state.playerOrder[0];

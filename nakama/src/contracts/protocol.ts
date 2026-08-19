@@ -65,12 +65,25 @@ type ConnectionChangedPayload = {
   connectedUserIds: string[];
   connectedCount: number;
   expectedCount: number;
+  disconnectDeadlineMs: number | null;
+  disconnectGraceMs: number;
+  serverTimeMs: number;
+};
+
+type GameplayTransition = {
+  type: "card_played";
+  actor: "self" | "opponent";
+  card: Card;
+  targetPileId: PileId;
 };
 
 type PlayerStateView = {
   stateVersion: number;
   status: MatchStatus;
   elapsedTimeMs: number;
+  transitions: GameplayTransition[];
+  myRttEstimateMs: number | null;
+  myRttSampleSequence: number;
   myHand: Card[];
   myDeckCount: number;
   opponentHandCount: number;

@@ -1,4 +1,5 @@
 import 'game_card.dart';
+import 'game_state_transition.dart';
 
 enum GameMatchStatus { waiting, active, finished }
 
@@ -32,7 +33,11 @@ class GameStateView {
     required this.winnerId,
     required this.winnerName,
     required this.endReason,
-  }) : myHand = List<GameCard>.unmodifiable(myHand);
+    this.myRttEstimateMs,
+    this.myRttSampleSequence,
+    List<GameStateTransition> transitions = const <GameStateTransition>[],
+  }) : myHand = List<GameCard>.unmodifiable(myHand),
+       transitions = List<GameStateTransition>.unmodifiable(transitions);
 
   final int stateVersion;
   final GameMatchStatus status;
@@ -46,6 +51,9 @@ class GameStateView {
   final String? winnerId;
   final String? winnerName;
   final GameMatchEndReason? endReason;
+  final int? myRttEstimateMs;
+  final int? myRttSampleSequence;
+  final List<GameStateTransition> transitions;
 
   factory GameStateView.fromJson(Map<String, dynamic> json) {
     final handJson = json['myHand'];
@@ -86,6 +94,29 @@ class GameStateView {
       );
     }
 
+    // These fields drive decorative feedback only. A future or malformed
+    // feedback payload must never make the authoritative game state unusable.
+    final myRttEstimateMs = _optionalNonNegativeInt(json['myRttEstimateMs']);
+    final myRttSampleSequence = _optionalNonNegativeInt(
+      json['myRttSampleSequence'],
+    );
+    final transitionsJson = json['transitions'];
+    final transitions = <GameStateTransition>[];
+    if (transitionsJson is List) {
+      for (final value in transitionsJson) {
+        if (value is! Map) continue;
+        try {
+          transitions.add(
+            GameStateTransition.fromJson(Map<String, dynamic>.from(value)),
+          );
+        } on FormatException {
+          // Unknown/malformed presentation events are safely ignored.
+        } on TypeError {
+          // A map with non-string keys is not a usable transition.
+        }
+      }
+    }
+
     return GameStateView(
       stateVersion: _nonNegativeInt(
         json['stateVersion'],
@@ -118,6 +149,9 @@ class GameStateView {
       winnerId: winnerValue as String?,
       winnerName: winnerNameValue as String?,
       endReason: _parseEndReason(json['endReason']),
+      myRttEstimateMs: myRttEstimateMs,
+      myRttSampleSequence: myRttSampleSequence,
+      transitions: transitions,
     );
   }
 }
@@ -139,6 +173,10 @@ int _nonNegativeInt(Object? value, {required String fieldName}) {
     throw FormatException('$fieldName must be a non-negative integer');
   }
   return value;
+}
+
+int? _optionalNonNegativeInt(Object? value) {
+  return value is int && value >= 0 ? value : null;
 }
 
 GameMatchStatus _parseStatus(Object? value) {

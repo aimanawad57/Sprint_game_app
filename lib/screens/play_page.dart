@@ -6,11 +6,17 @@ import 'package:nakama/nakama.dart' as nakama;
 import '../config/game_protocol.dart';
 import '../models/game/game_connection.dart';
 import '../models/game/game_move.dart';
+import '../models/game/game_state_transition.dart';
 import '../models/game/game_state_view.dart';
 import '../models/game/rematch_status.dart';
+import '../models/game_feedback_preferences.dart';
 import '../models/play_exit_action.dart';
+import '../services/game_connection_feedback_tracker.dart';
+import '../services/game_feedback_service.dart';
 import '../services/game_message_decoder.dart';
+import '../services/match_reconnect_coordinator.dart';
 import '../services/nakama_service.dart';
+import '../widgets/game_feedback_scope.dart';
 import '../widgets/game_state_panel.dart';
 
 enum PlayQueueStatus {
@@ -50,6 +56,7 @@ class PlayPage extends StatefulWidget {
 
 class _PlayPageState extends State<PlayPage> {
   static const _messageDecoder = GameMessageDecoder();
+  static final Stopwatch _monotonicClock = Stopwatch()..start();
 
   PlayQueueStatus _status = PlayQueueStatus.connecting;
   StreamSubscription<nakama.MatchmakerMatched>? _matchmakerSubscription;
@@ -64,20 +71,43 @@ class _PlayPageState extends State<PlayPage> {
   String? _moveFeedback;
   String? _pendingCardId;
   bool _isMovePending = false;
-  bool _isRecoveringConnection = false;
   int _matchedPlayerCount = 0;
   GameConnectionView? _connectionState;
   RematchStatusView? _rematchStatus;
   bool _isRematchSubmitting = false;
   Timer? _rematchResponseTimer;
+  Timer? _pileResetTimer;
+  late GameFeedbackService _feedbackService;
+  int _transitionSequence = 0;
+  int _pileResetSequence = 0;
+  bool _pileResetActive = false;
+  late final MatchReconnectCoordinator _reconnectCoordinator;
+  final GameConnectionFeedbackTracker _connectionFeedbackTracker =
+      GameConnectionFeedbackTracker();
+  int? _reconnectJoinSucceededAtMs;
+  int _matchDataGeneration = 0;
+  int _joinGeneration = 0;
+  int _matchmakingGeneration = 0;
+  int _roundSequence = 0;
+  int? _lastResultFeedbackRoundSequence;
+  int? _lastResultFeedbackStateVersion;
+  int _soundPreferenceRequestRevision = 0;
+  int _vibrationPreferenceRequestRevision = 0;
+  bool _isDisposing = false;
+  bool _matchmakerMatchHandled = false;
 
-  /// When the most recent authoritative state was applied, on this device's
-  /// clock. Anchors the reaction-time measurement sent with the next move.
-  DateTime? _lastAuthoritativeStateAt;
+  /// Monotonic instant when the most recent authoritative state was applied.
+  /// Anchors the reaction-time measurement sent with the next move without
+  /// being affected by wall-clock corrections.
+  int? _lastAuthoritativeStateAtMs;
 
   @override
   void initState() {
     super.initState();
+    _reconnectCoordinator = MatchReconnectCoordinator(
+      attempt: _attemptMatchRecovery,
+      cancelAttempt: _cancelMatchRecoveryAttempt,
+    )..addListener(_handleReconnectCoordinatorChanged);
     _socketDisconnectSubscription = widget.nakamaService.realtimeDisconnects
         .listen((_) => _handleRealtimeDisconnect());
 
@@ -90,20 +120,43 @@ class _PlayPageState extends State<PlayPage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _feedbackService = GameFeedbackScope.of(context);
+  }
+
+  @override
   void dispose() {
+    _isDisposing = true;
+    _matchDataGeneration += 1;
+    _joinGeneration += 1;
+    _matchmakingGeneration += 1;
     unawaited(_matchDataSubscription?.cancel());
     unawaited(_matchmakerSubscription?.cancel());
     unawaited(_socketDisconnectSubscription?.cancel());
     unawaited(_cancelMatchmaking());
     unawaited(_leaveMatchIfJoined());
     _rematchResponseTimer?.cancel();
+    _pileResetTimer?.cancel();
+    _reconnectCoordinator
+      ..removeListener(_handleReconnectCoordinatorChanged)
+      ..dispose();
     super.dispose();
   }
 
   void _subscribeToMatchData(nakama.NakamaWebsocketClient socket) {
+    final generation = ++_matchDataGeneration;
     _matchDataSubscription = socket.onMatchData.listen(
-      _handleMatchData,
+      (message) {
+        if (!mounted ||
+            generation != _matchDataGeneration ||
+            !identical(socket, _socket)) {
+          return;
+        }
+        _handleMatchData(message);
+      },
       onError: (Object error) {
+        if (!mounted || generation != _matchDataGeneration) return;
         debugPrint('Match data stream failed: $error');
       },
     );
@@ -111,18 +164,61 @@ class _PlayPageState extends State<PlayPage> {
 
   void _handleRealtimeDisconnect() {
     if (!mounted) return;
+    // Invalidate buffered events from the dead socket before starting a new
+    // subscription. Only the targeted snapshot on the recovery socket may
+    // complete the reconnect handshake.
+    _matchDataGeneration += 1;
+    _reconnectJoinSucceededAtMs = null;
 
     final matchId = _matchId ?? _joiningMatchId;
     final gameState = _gameState;
     if (matchId != null && gameState?.status == GameMatchStatus.active) {
-      Navigator.of(context).pop(PlayExitResult.disconnectedFromMatch(matchId));
+      setState(() {
+        _isMovePending = false;
+        _pendingCardId = null;
+        _moveFeedback = null;
+      });
+      if (_connectionFeedbackTracker.hasActiveConnectedBaseline) {
+        unawaited(
+          _feedbackService.reconnect(GameReconnectFeedback.reconnecting),
+        );
+      }
+      _reconnectCoordinator.start(
+        gracePeriodMs: _connectionState?.disconnectGraceMs ?? 30000,
+      );
       return;
     }
 
-    unawaited(_recoverMatchConnection());
+    unawaited(_recoverOutsideActiveMatch());
+  }
+
+  Future<void> _recoverOutsideActiveMatch() async {
+    if ((_matchId ?? _joiningMatchId) == null) {
+      if (mounted && !_isDisposing) {
+        setState(() {
+          _ticket = null;
+          _errorMessage =
+              'Connection lost while matchmaking. Return and try again.';
+          _status = PlayQueueStatus.failed;
+        });
+      }
+      return;
+    }
+    try {
+      await _attemptMatchRecovery();
+    } catch (_) {
+      if (mounted && !_isDisposing) {
+        _setFailure('Could not reconnect to the match.');
+      }
+    }
+  }
+
+  void _handleReconnectCoordinatorChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _startMatchmaking() async {
+    final matchmakingGeneration = ++_matchmakingGeneration;
     try {
       final socket = widget.nakamaService.realtimeSocket(widget.nakamaSession);
       _socket = socket;
@@ -135,13 +231,24 @@ class _PlayPageState extends State<PlayPage> {
       _matchmakerSubscription = socket.onMatchmakerMatched.listen(
         _handleMatchmakerMatched,
         onError: (error) {
+          if (_isDisposing ||
+              !mounted ||
+              matchmakingGeneration != _matchmakingGeneration ||
+              !identical(socket, _socket)) {
+            return;
+          }
           _setFailure('Matchmaker stream failed: $error');
         },
       );
 
       final ticket = await widget.nakamaService.joinQuickplayQueue(socket);
 
-      if (!mounted) return;
+      if (_isDisposing ||
+          !mounted ||
+          matchmakingGeneration != _matchmakingGeneration) {
+        await _removeStaleMatchmakerTicket(socket, ticket.ticket);
+        return;
+      }
       setState(() {
         // A very fast matchmaker event can arrive before addMatchmaker's Future
         // completes. Do not move an already joining/ready page backwards.
@@ -151,12 +258,18 @@ class _PlayPageState extends State<PlayPage> {
         }
       });
     } catch (error) {
+      if (_isDisposing ||
+          !mounted ||
+          matchmakingGeneration != _matchmakingGeneration) {
+        return;
+      }
       debugPrint('Could not start matchmaking: $error');
       _setFailure('Could not start matchmaking.');
     }
   }
 
   Future<void> _joinDirectMatch(String matchId) async {
+    final joinGeneration = ++_joinGeneration;
     try {
       final socket = widget.nakamaService.realtimeSocket(widget.nakamaSession);
       _socket = socket;
@@ -176,7 +289,10 @@ class _PlayPageState extends State<PlayPage> {
         matchId: matchId,
       );
 
-      if (!mounted) return;
+      if (!_isJoinCurrent(joinGeneration)) {
+        await _releaseStaleJoinedMatch(socket, match.matchId);
+        return;
+      }
       setState(() {
         _matchId = match.matchId;
         _joiningMatchId = null;
@@ -185,61 +301,82 @@ class _PlayPageState extends State<PlayPage> {
         }
       });
     } catch (error) {
+      if (!_isJoinCurrent(joinGeneration)) return;
       _joiningMatchId = null;
       debugPrint('Could not join match: $error');
       _setFailure('Could not join the match.');
     }
   }
 
-  Future<void> _recoverMatchConnection() async {
+  Future<void> _attemptMatchRecovery() async {
     final matchId = _matchId ?? _joiningMatchId;
-    if (!mounted || matchId == null || _isRecoveringConnection) {
+    if (!mounted || matchId == null) return;
+
+    final previousJoin = _reconnectJoinSucceededAtMs;
+    if (previousJoin != null &&
+        _monotonicClock.elapsedMilliseconds - previousJoin < 3000) {
       return;
     }
 
-    _isRecoveringConnection = true;
-    setState(() {
-      _status = PlayQueueStatus.reconnecting;
-      _isMovePending = false;
-      _pendingCardId = null;
-      _moveFeedback = null;
-    });
+    final socket = widget.nakamaService.realtimeSocket(widget.nakamaSession);
+    if (!identical(socket, _socket)) {
+      _matchDataGeneration += 1;
+      await _matchDataSubscription?.cancel();
+      if (_isDisposing || !mounted) return;
+      _socket = socket;
+      _subscribeToMatchData(socket);
+    } else {
+      _socket = socket;
+    }
+    _joiningMatchId = matchId;
+    final joinGeneration = ++_joinGeneration;
 
     try {
-      await _matchDataSubscription?.cancel();
-      final socket = widget.nakamaService.realtimeSocket(widget.nakamaSession);
-      _socket = socket;
-      _joiningMatchId = matchId;
-      _subscribeToMatchData(socket);
-
       final match = await widget.nakamaService.joinAuthoritativeMatch(
         socket: socket,
         matchId: matchId,
       );
 
-      if (!mounted) return;
+      if (!_isJoinCurrent(joinGeneration)) {
+        await _releaseStaleJoinedMatch(socket, match.matchId);
+        return;
+      }
+      _reconnectJoinSucceededAtMs = _monotonicClock.elapsedMilliseconds;
       setState(() {
         _matchId = match.matchId;
         _joiningMatchId = null;
-        // The resync opcode can arrive before joinMatch completes.
-        if (_status == PlayQueueStatus.reconnecting) {
+        // Keep an existing arena visible while the targeted authoritative
+        // resync arrives. Queue/loading screens still show reconnect status.
+        if (_gameState == null) {
           _status = PlayQueueStatus.waitingForInitialState;
         }
       });
     } catch (error) {
+      if (!_isJoinCurrent(joinGeneration)) return;
+      _reconnectJoinSucceededAtMs = null;
       _joiningMatchId = null;
       debugPrint('Could not reconnect to match: $error');
-      _setFailure('Could not reconnect to the match.');
-    } finally {
-      _isRecoveringConnection = false;
+      rethrow;
     }
+  }
+
+  Future<void> _cancelMatchRecoveryAttempt() async {
+    _joinGeneration += 1;
+    _matchDataGeneration += 1;
+    _reconnectJoinSucceededAtMs = null;
+    await _matchDataSubscription?.cancel();
+    _matchDataSubscription = null;
+    final socket = _socket;
+    await widget.nakamaService.closeRealtimeSocket();
+    if (identical(_socket, socket)) _socket = null;
   }
 
   Future<void> _handleMatchmakerMatched(
     nakama.MatchmakerMatched matched,
   ) async {
+    int? joinGeneration;
     try {
-      if (!mounted) return;
+      if (!mounted || _matchmakerMatchHandled) return;
 
       // Because the backend registers a matchmaker hook, Nakama should return
       // an authoritative match id here instead of only a relayed match token.
@@ -253,9 +390,14 @@ class _PlayPageState extends State<PlayPage> {
         throw Exception('Realtime socket is not connected');
       }
 
+      _matchmakerMatchHandled = true;
+      _matchmakingGeneration += 1;
+      unawaited(_matchmakerSubscription?.cancel());
+      _matchmakerSubscription = null;
+      _ticket = null;
+      joinGeneration = ++_joinGeneration;
       _joiningMatchId = matchId;
       setState(() {
-        _ticket = null;
         _matchedPlayerCount = matched.users.length;
         _status = PlayQueueStatus.joiningMatch;
       });
@@ -265,7 +407,10 @@ class _PlayPageState extends State<PlayPage> {
         matchId: matchId,
       );
 
-      if (!mounted) return;
+      if (!_isJoinCurrent(joinGeneration)) {
+        await _releaseStaleJoinedMatch(socket, match.matchId);
+        return;
+      }
       setState(() {
         _matchId = match.matchId;
         _joiningMatchId = null;
@@ -276,6 +421,11 @@ class _PlayPageState extends State<PlayPage> {
         }
       });
     } catch (error) {
+      if (_isDisposing ||
+          !mounted ||
+          (joinGeneration != null && joinGeneration != _joinGeneration)) {
+        return;
+      }
       _joiningMatchId = null;
       debugPrint('Could not join match: $error');
       _setFailure('Could not join the match.');
@@ -298,10 +448,15 @@ class _PlayPageState extends State<PlayPage> {
           );
           break;
         case GameServerOpcode.stateUpdate:
-        case GameServerOpcode.stuckReset:
         case GameServerOpcode.gameEnded:
           _applyAuthoritativeState(
             _messageDecoder.decodeGameState(message.data),
+          );
+          break;
+        case GameServerOpcode.stuckReset:
+          _applyAuthoritativeState(
+            _messageDecoder.decodeGameState(message.data),
+            isPileReset: true,
           );
           break;
         case GameServerOpcode.moveRejected:
@@ -312,6 +467,7 @@ class _PlayPageState extends State<PlayPage> {
             _pendingCardId = null;
             _moveFeedback = rejection.reason.displayMessage;
           });
+          unawaited(_feedbackService.illegalMove());
           break;
         case GameServerOpcode.rematchStatus:
           final rematchStatus = _messageDecoder.decodeRematchStatus(
@@ -329,6 +485,43 @@ class _PlayPageState extends State<PlayPage> {
             message.data,
           );
           if (!mounted) return;
+          final currentUserConnected = connectionState.isUserConnected(
+            widget.nakamaSession.userId,
+          );
+          final disconnectDeadlineMs = connectionState.disconnectDeadlineMs;
+          final connectionServerTimeMs = connectionState.serverTimeMs;
+          if (_reconnectCoordinator.isActive &&
+              !currentUserConnected &&
+              disconnectDeadlineMs != null &&
+              connectionServerTimeMs != null) {
+            _reconnectCoordinator.reconcileDeadline(
+              deadlineMs: disconnectDeadlineMs,
+              serverTimeMs: connectionServerTimeMs,
+              rttEstimateMs: _gameState?.myRttEstimateMs,
+            );
+          }
+          final isConnected = connectionState.allPlayersConnected;
+          final feedbackChange = _connectionFeedbackTracker.observe(
+            connected: isConnected,
+            matchActive: _gameState?.status == GameMatchStatus.active,
+          );
+          switch (feedbackChange) {
+            case GameConnectionFeedbackChange.none:
+              break;
+            case GameConnectionFeedbackChange.reconnecting:
+              unawaited(
+                _feedbackService.reconnect(GameReconnectFeedback.reconnecting),
+              );
+            case GameConnectionFeedbackChange.restored:
+              if (_reconnectCoordinator.status !=
+                      MatchReconnectStatus.reconnecting &&
+                  _reconnectCoordinator.status !=
+                      MatchReconnectStatus.expired) {
+                unawaited(
+                  _feedbackService.reconnect(GameReconnectFeedback.restored),
+                );
+              }
+          }
           setState(() {
             _connectionState = connectionState;
             if (!connectionState.allPlayersConnected) {
@@ -352,6 +545,7 @@ class _PlayPageState extends State<PlayPage> {
   void _applyAuthoritativeState(
     GameStateView gameState, {
     bool startsNewRound = false,
+    bool isPileReset = false,
   }) {
     if (!mounted) return;
 
@@ -366,19 +560,64 @@ class _PlayPageState extends State<PlayPage> {
       return;
     }
 
+    if (_reconnectCoordinator.status == MatchReconnectStatus.reconnecting ||
+        _reconnectCoordinator.status == MatchReconnectStatus.expired) {
+      _reconnectJoinSucceededAtMs = null;
+      if (gameState.status == GameMatchStatus.active) {
+        _reconnectCoordinator.markRestored();
+        unawaited(_feedbackService.reconnect(GameReconnectFeedback.restored));
+      } else {
+        // A recovery attempt can return the authoritative terminal snapshot
+        // after the grace window elapsed. That is a match result, not a
+        // successful reconnection, so remove recovery UI without a false cue.
+        _reconnectCoordinator.reset();
+      }
+    }
+
     final pendingCardWasPlayed =
         _pendingCardId != null &&
         !gameState.myHand.any((card) => card.cardId == _pendingCardId);
     final pendingMoveResolved =
         pendingCardWasPlayed || gameState.status == GameMatchStatus.finished;
+    final hasNewPresentationVersion =
+        startsNewRound ||
+        currentState == null ||
+        gameState.stateVersion > currentState.stateVersion;
+    if (gameState.status == GameMatchStatus.active &&
+        (_connectionState?.allPlayersConnected ?? true)) {
+      _connectionFeedbackTracker.markActiveSnapshot(connected: true);
+    }
+
+    if (hasNewPresentationVersion) {
+      for (final transition in gameState.transitions) {
+        if (transition.actor == GameStateTransitionActor.opponent) {
+          unawaited(_feedbackService.opponentMove());
+        }
+      }
+    }
+    if (isPileReset) {
+      _pileResetTimer?.cancel();
+      unawaited(_feedbackService.pileReset());
+      _pileResetTimer = Timer(const Duration(milliseconds: 850), () {
+        if (!mounted) return;
+        setState(() => _pileResetActive = false);
+      });
+    }
 
     // Reaction time for the next move is measured from this moment (when the
     // client processed the state it will be reacting to), on this device's
     // own clock, so it needs no synchronization with the server clock.
-    _lastAuthoritativeStateAt = DateTime.now();
+    _lastAuthoritativeStateAtMs = _monotonicClock.elapsedMilliseconds;
 
     setState(() {
       _gameState = gameState;
+      if (hasNewPresentationVersion && gameState.transitions.isNotEmpty) {
+        _transitionSequence += 1;
+      }
+      if (isPileReset) {
+        _pileResetSequence += 1;
+        _pileResetActive = true;
+      }
       _errorMessage = null;
       _moveFeedback = null;
       if (pendingMoveResolved) {
@@ -387,14 +626,38 @@ class _PlayPageState extends State<PlayPage> {
       }
       _status = PlayQueueStatus.ready;
       if (startsNewRound) {
+        _roundSequence += 1;
+        _pileResetTimer?.cancel();
+        _pileResetActive = false;
         _rematchResponseTimer?.cancel();
         _pendingCardId = null;
         _isMovePending = false;
         _moveFeedback = null;
         _rematchStatus = null;
         _isRematchSubmitting = false;
+        _connectionFeedbackTracker.markActiveSnapshot(connected: true);
       }
     });
+  }
+
+  void _handleResultPresentationStarted() {
+    final gameState = _gameState;
+    if (!mounted || gameState?.status != GameMatchStatus.finished) return;
+    if (_lastResultFeedbackRoundSequence == _roundSequence &&
+        _lastResultFeedbackStateVersion == gameState!.stateVersion) {
+      return;
+    }
+    _lastResultFeedbackRoundSequence = _roundSequence;
+    _lastResultFeedbackStateVersion = gameState!.stateVersion;
+
+    final winnerId = gameState.winnerId;
+    if (winnerId == null) {
+      unawaited(_feedbackService.neutralEnd());
+    } else if (winnerId == widget.nakamaSession.userId) {
+      unawaited(_feedbackService.win());
+    } else {
+      unawaited(_feedbackService.loss());
+    }
   }
 
   void _sendRematchDecision(bool accept) {
@@ -431,6 +694,80 @@ class _PlayPageState extends State<PlayPage> {
     }
   }
 
+  void _showFeedbackSettings() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => AnimatedBuilder(
+        animation: _feedbackService,
+        builder: (context, child) {
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Game feedback',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    key: const ValueKey('soundEffectsSetting'),
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.volume_up_rounded),
+                    title: const Text('Sound effects'),
+                    subtitle: const Text('Moves, countdowns, and results'),
+                    value: _feedbackService.soundEffectsEnabled,
+                    onChanged: (enabled) =>
+                        unawaited(_updateSoundEffectsSetting(enabled)),
+                  ),
+                  SwitchListTile(
+                    key: const ValueKey('vibrationSetting'),
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.vibration_rounded),
+                    title: const Text('Vibration'),
+                    subtitle: const Text('Tactile feedback during play'),
+                    value: _feedbackService.vibrationEnabled,
+                    onChanged: (enabled) =>
+                        unawaited(_updateVibrationSetting(enabled)),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _updateSoundEffectsSetting(bool enabled) async {
+    final requestRevision = ++_soundPreferenceRequestRevision;
+    final result = await _feedbackService.setSoundEffectsEnabled(enabled);
+    if (requestRevision != _soundPreferenceRequestRevision) return;
+    _showPreferenceSaveFailure(result);
+  }
+
+  Future<void> _updateVibrationSetting(bool enabled) async {
+    final requestRevision = ++_vibrationPreferenceRequestRevision;
+    final result = await _feedbackService.setVibrationEnabled(enabled);
+    if (requestRevision != _vibrationPreferenceRequestRevision) return;
+    _showPreferenceSaveFailure(result);
+  }
+
+  void _showPreferenceSaveFailure(GameFeedbackPreferenceUpdateResult result) {
+    if (!mounted || result.succeeded) return;
+    final setting = result.preference == GameFeedbackPreference.soundEffects
+        ? 'sound effects'
+        : 'vibration';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Could not save the $setting setting.')),
+    );
+  }
+
   void _submitMove(String cardId, GamePileId pileId) {
     final socket = _socket;
     final matchId = _matchId ?? _joiningMatchId;
@@ -440,14 +777,16 @@ class _PlayPageState extends State<PlayPage> {
         gameState == null ||
         gameState.status != GameMatchStatus.active ||
         !(_connectionState?.allPlayersConnected ?? true) ||
+        _reconnectCoordinator.status == MatchReconnectStatus.reconnecting ||
+        _reconnectCoordinator.status == MatchReconnectStatus.expired ||
         _isMovePending) {
       return;
     }
 
-    final lastStateAt = _lastAuthoritativeStateAt;
+    final lastStateAt = _lastAuthoritativeStateAtMs;
     final reactionTimeMs = lastStateAt == null
         ? null
-        : DateTime.now().difference(lastStateAt).inMilliseconds;
+        : _monotonicClock.elapsedMilliseconds - lastStateAt;
 
     setState(() {
       _isMovePending = true;
@@ -490,6 +829,46 @@ class _PlayPageState extends State<PlayPage> {
       );
     } catch (error) {
       debugPrint('Could not cancel matchmaking ticket: $error');
+    }
+  }
+
+  bool _isJoinCurrent(int generation) {
+    return !_isDisposing && mounted && generation == _joinGeneration;
+  }
+
+  Future<void> _removeStaleMatchmakerTicket(
+    nakama.NakamaWebsocketClient socket,
+    String ticket,
+  ) async {
+    try {
+      await widget.nakamaService.leaveQuickplayQueue(
+        socket: socket,
+        ticket: ticket,
+      );
+    } catch (error) {
+      debugPrint('Could not remove stale matchmaking ticket: $error');
+    }
+  }
+
+  Future<void> _releaseStaleJoinedMatch(
+    nakama.NakamaWebsocketClient socket,
+    String matchId,
+  ) async {
+    final currentMatchId = _matchId ?? _joiningMatchId;
+    final membershipStillOwned =
+        !_isDisposing &&
+        mounted &&
+        identical(socket, _socket) &&
+        currentMatchId == matchId;
+    if (membershipStillOwned) return;
+
+    try {
+      await widget.nakamaService.leaveAuthoritativeMatch(
+        socket: socket,
+        matchId: matchId,
+      );
+    } catch (error) {
+      debugPrint('Could not release stale match join: $error');
     }
   }
 
@@ -604,11 +983,21 @@ class _PlayPageState extends State<PlayPage> {
     final gameState = _gameState;
     final connectionState = _connectionState;
     final gameFinished = gameState?.status == GameMatchStatus.finished;
-    final movesEnabled = connectionState?.allPlayersConnected ?? true;
+    final localReconnectStatus = _reconnectCoordinator.status;
+    final localReconnecting =
+        localReconnectStatus == MatchReconnectStatus.reconnecting ||
+        localReconnectStatus == MatchReconnectStatus.expired;
+    final movesEnabled =
+        (connectionState?.allPlayersConnected ?? true) && !localReconnecting;
     final currentUserConnected =
         connectionState?.isUserConnected(widget.nakamaSession.userId) ?? true;
-    final connectionMessage = gameFinished || movesEnabled
+    final connectionMessage =
+        gameFinished || (movesEnabled && !localReconnecting)
         ? null
+        : localReconnecting
+        ? localReconnectStatus == MatchReconnectStatus.expired
+              ? 'The reconnection window elapsed.'
+              : 'Connection lost. Reconnecting automatically...'
         : currentUserConnected
         ? 'Opponent disconnected. Waiting for reconnection...'
         : 'You are disconnected. Reconnecting...';
@@ -623,6 +1012,13 @@ class _PlayPageState extends State<PlayPage> {
         appBar: AppBar(
           title: const Text('Play'),
           leading: BackButton(onPressed: _exitPlayPage),
+          actions: [
+            IconButton(
+              tooltip: 'Sound and vibration settings',
+              onPressed: _showFeedbackSettings,
+              icon: const Icon(Icons.tune_rounded),
+            ),
+          ],
         ),
         body: SafeArea(
           child: Stack(
@@ -647,6 +1043,30 @@ class _PlayPageState extends State<PlayPage> {
                         feedbackMessage: _moveFeedback,
                         movesEnabled: movesEnabled,
                         connectionMessage: connectionMessage,
+                        pendingCardId: _pendingCardId,
+                        transitions: gameState.transitions,
+                        transitionSequence: _transitionSequence,
+                        transitionRoundSequence: _roundSequence,
+                        pileResetSequence: _pileResetSequence,
+                        pileResetActive: _pileResetActive,
+                        disconnectDeadlineMs:
+                            connectionState?.disconnectDeadlineMs,
+                        connectionServerTimeMs: connectionState?.serverTimeMs,
+                        myRttEstimateMs: gameState.myRttEstimateMs,
+                        rttSampleSequence: gameState.myRttSampleSequence ?? 0,
+                        localReconnectRemainingSeconds: localReconnecting
+                            ? _reconnectCoordinator.remainingSeconds
+                            : null,
+                        localReconnectExpired:
+                            localReconnectStatus ==
+                            MatchReconnectStatus.expired,
+                        onRetryReconnect: () =>
+                            unawaited(_reconnectCoordinator.retryNow()),
+                        onReturnToMenu: _exitPlayPage,
+                        onIllegalMoveFeedback: () =>
+                            unawaited(_feedbackService.illegalMove()),
+                        onResultPresentationStarted:
+                            _handleResultPresentationStarted,
                       )
                     : Padding(
                         padding: const EdgeInsets.all(24),
@@ -699,6 +1119,9 @@ class _PlayPageState extends State<PlayPage> {
                     startsAtMs: roundStart.startsAtMs,
                     serverTimeMs: roundStart.serverTimeMs,
                     roundNumber: roundStart.roundNumber,
+                    networkRttMs: gameState?.myRttEstimateMs,
+                    onCountdownChanged: (seconds) =>
+                        unawaited(_feedbackService.countdown(seconds)),
                   ),
                 ),
             ],

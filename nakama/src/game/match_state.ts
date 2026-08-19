@@ -30,9 +30,15 @@ type PlayerMatchState = {
   connected: boolean;
   disconnectedAtMs: number | null;
   // Network round-trip estimate (ms) derived from this player's own moves:
-  // receivedAt - lastBroadcastAt - reactionTime. Used to size the fairness
-  // window adaptively. Null until the first timeable move is observed.
+  // receivedAt - lastStateSentAt - reactionTime. Stored as an EMA and used to
+  // size the fairness window adaptively. Null until the first timeable move.
   rttEstimateMs: number | null;
+  // Increments for every fresh raw RTT sample, even if the rounded EMA does not
+  // change, so the viewer can distinguish fresh data from a repeated snapshot.
+  rttSampleSequence: number;
+  // Per-player fairness anchor. A targeted reconnect snapshot must update only
+  // the recipient, not move the other player's reaction-time origin.
+  lastStateSentAtMs: number | null;
 };
 
 type SprintMatchState = {
@@ -59,10 +65,6 @@ type SprintMatchState = {
   resultPersistencePending: boolean;
   resultPersisted: boolean;
   matchCode: string | null;
-  // Server-clock timestamp of the most recent full-state broadcast. Anchors
-  // reaction-time fairness: a move's client-reported reaction time is added
-  // to this to reconstruct when the player actually reacted.
-  lastBroadcastAtMs: number | null;
   pendingMoves: ValidatedSubmitMove[];
   nextPendingMoveSequence: number;
   nextTieBreakerPlayerId: string | null;

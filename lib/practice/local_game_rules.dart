@@ -1,18 +1,11 @@
 import 'dart:math';
 
+import '../gameplay/game_rules.dart';
 import '../models/game/game_card.dart';
-import '../models/game/game_move.dart';
 
-bool cardsMatch(GameCard played, GameCard top) =>
-    played.color == top.color ||
-    played.shape == top.shape ||
-    played.count == top.count;
-
-List<GamePileId> legalTargets(GameCard card, GameCard pile1, GameCard pile2) =>
-    [
-      if (cardsMatch(card, pile1)) GamePileId.pile1,
-      if (cardsMatch(card, pile2)) GamePileId.pile2,
-    ];
+// Preserve the original practice-library API for existing consumers while the
+// pure matching rules live in the production gameplay layer.
+export '../gameplay/game_rules.dart';
 
 bool handHasLegalMove(
   Iterable<GameCard> hand,

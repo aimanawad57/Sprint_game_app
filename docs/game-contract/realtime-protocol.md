@@ -26,7 +26,9 @@ gameplay protocol is implemented.
 | 16 | `rematchStatus` | Report rematch request, decline, expiry, start, or unavailability. |
 
 The backend uses opcode `15` for connection changes. Its payload contains the
-changes from the current callback and a full snapshot of connected user IDs.
+changes from the current callback, a full snapshot of connected user IDs, the
+configured disconnect grace, server time, and the active disconnect deadline
+when one exists.
 
 ## Client-to-server payload
 
@@ -68,6 +70,21 @@ Used by `matchStarted`, `stateUpdate`, `stuckReset`, and `gameEnded` as needed:
   "stateVersion": 9,
   "status": "active",
   "elapsedTimeMs": 37250,
+  "transitions": [
+    {
+      "type": "card_played",
+      "actor": "self",
+      "card": {
+        "card_id": "card_012",
+        "color": "red",
+        "shape": "star",
+        "count": 2
+      },
+      "targetPileId": "pile_1"
+    }
+  ],
+  "myRttEstimateMs": 84,
+  "myRttSampleSequence": 3,
   "myHand": [
     {
       "card_id": "card_012",
@@ -109,6 +126,27 @@ the recorded match start; finished matches keep the final start-to-end
 duration. Clients may advance an active value locally with a monotonic clock,
 but must freeze the timer at the value in the finished state.
 
+`transitions` describes only public actions confirmed in the authoritative
+state change carried by this payload. A confirmed play uses
+`type: "card_played"`, the public played `card`, and its `targetPileId`.
+`actor` is deliberately viewer-relative: the moving player receives `"self"`
+and the other player receives `"opponent"`. The wire payload never exposes the
+actor's user ID. When valid moves land on both piles in one fairness batch, the
+array contains both transitions in reaction-adjusted resolution order. Initial
+round snapshots, reconnect snapshots, and updates without an accepted card play
+use an empty array, so clients do not replay an old animation.
+
+`myRttEstimateMs` is the server-smoothed non-negative whole-millisecond RTT
+estimate for this snapshot's viewer, or `null` until the server can derive one
+from that player's submitted move timing. The first valid sample becomes the
+estimate; later samples use an exponential moving average with alpha `0.25`.
+`myRttSampleSequence` starts at `0` each round and increments for every fresh
+RTT sample, even when rounding leaves the estimate unchanged. Clients can use
+the sequence to distinguish a newly sampled value from a repeated snapshot.
+A player never receives the opponent's estimate or sequence. These fields are
+advisory presentation data for a degraded-only connection indicator; they do
+not replace server-authoritative move validation or fairness calculations.
+
 Opcode `10` (`matchStarted`) is sent once per round. Its payload uses
 `stateVersion: 1`, `status: "active"`, three cards in `myHand`, deck counts of
 26, opponent hand count of 3, and one public top card for each center pile.
@@ -124,7 +162,9 @@ or `abandoned`.
 Opcodes `11` (`stateUpdate`) and `14` (`gameEnded`) are also implemented.
 Nakama sends a fresh private player view after every accepted move. Flutter
 replaces its local snapshot only from these authoritative messages and does not
-move or draw cards optimistically.
+move or draw cards optimistically. The transition metadata lets Flutter animate
+the confirmed change while the snapshot remains authoritative. A winning final
+move is included in the opcode `14` view in the same way.
 
 Opcode `11` is also the reconnection resynchronization message. When a canonical
 player joins a match that is already active or finished, Nakama sends the
@@ -133,6 +173,9 @@ does not increment `stateVersion`, redeal cards, reshuffle piles, or restart
 the current round. A delayed leave event from an older socket session cannot mark
 the replacement session disconnected. Flutter accepts the equal-version
 snapshot because presence reconnection may not involve a gameplay-state change.
+The targeted snapshot updates only the reconnecting player's private
+`lastStateSentAtMs` timing anchor; it cannot change the opponent's reaction-time
+anchor.
 
 ### Rematch decision and status
 
@@ -193,27 +236,60 @@ move against the current authoritative state, queues the valid candidate, and
 waits a fairness window from the first queued move. Obvious invalid moves are
 still rejected immediately.
 
-The fairness window is sized adaptively per match from the two players'
-measured round-trip time (`max(RTT) / 2`, clamped to 100-300ms), so two
+The fairness window is sized adaptively per match from the gap between the two
+players' measured round-trip times (`(max(RTT) - min(RTT)) / 2`, clamped to
+100-300ms), so two
 low-latency players resolve near-instantly while a real latency gap gets a
 wider window. RTT is derived from each player's own moves
-(`receivedAt - lastBroadcast - reactionTime`); until an estimate exists a
-150ms default is used.
+(`receivedAt - lastStateSentAt - reactionTime`) and is smoothed server-side;
+until an estimate exists a 150ms default is used. `lastStateSentAt` is private
+to each player and records when the server last sent that player a full or
+targeted state snapshot. This prevents a reconnect snapshot sent to one player
+from shifting the other player's fairness timing.
 
 When the fairness window is processed, Nakama revalidates all ready candidates.
 If two ready valid moves target different center piles, both moves can be
 applied in the same authoritative update. If two ready valid moves target the
 same center pile, only one can win that pile. The winner is the move with the
-smaller reaction-adjusted response time (`lastBroadcast + reactionTimeMs`), so
-the player who genuinely reacted faster wins regardless of whose packet
-arrived first. Only on an exact tie does the server fall back to an alternating
-tie-break priority between the two players. The losing same-pile candidate is
-rejected as `stale_move`.
+smaller reaction-adjusted response time
+(`lastStateSentAtMs + reactionTimeMs`), so the player who genuinely reacted
+faster wins regardless of whose packet arrived first. Only on an exact tie
+does the server fall back to an alternating tie-break priority between the two
+players. The losing same-pile candidate is rejected as `stale_move`.
 
 Nakama rejects a submitted move with `player_disconnected` unless both
 canonical players have an active match presence. This server-side rule is
 authoritative; Flutter also disables move controls while opcode `15` reports
 that either player is disconnected.
+
+### Connection change - opcode 15
+
+```json
+{
+  "changes": [
+    {"userId": "player-b", "status": "disconnected"}
+  ],
+  "connectedUserIds": ["player-a"],
+  "connectedCount": 1,
+  "expectedCount": 2,
+  "disconnectGraceMs": 30000,
+  "disconnectDeadlineMs": 1784800851954,
+  "serverTimeMs": 1784800821954
+}
+```
+
+`serverTimeMs` is the server timestamp at which the connection snapshot was
+created. `disconnectGraceMs` is the configured disconnect grace duration and is
+present on every connection snapshot; its current value is 30 seconds. During
+an active match, `disconnectDeadlineMs` is the absolute server deadline at
+which the current disconnect state can resolve the match; it is `null` when no
+active disconnect timer exists. If both players are disconnected with different
+timestamps, the payload uses the earliest deadline because that is when
+abandonment can first become authoritative. Clients calculate the visible
+remaining time from these server-clock values, but they never declare a timeout
+or winner locally. A reconnect event carries `disconnectDeadlineMs: null`, and
+the eventual opcode `14` remains the only authority for a forfeit or
+abandonment result.
 
 ### Stuck reset - opcode 13
 

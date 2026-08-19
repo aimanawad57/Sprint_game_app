@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sprint_app/models/game/game_card.dart';
+import 'package:sprint_app/models/game/game_move.dart';
+import 'package:sprint_app/models/game/game_state_transition.dart';
 import 'package:sprint_app/models/game/game_state_view.dart';
 
 void main() {
@@ -50,6 +52,64 @@ void main() {
       expect(state.winnerId, isNull);
       expect(state.winnerName, isNull);
       expect(state.endReason, isNull);
+      expect(state.transitions, isEmpty);
+      expect(state.myRttEstimateMs, isNull);
+      expect(state.myRttSampleSequence, isNull);
+    });
+
+    test('parses ordered presentation transitions and viewer RTT metadata', () {
+      final state = validState()
+        ..['myRttEstimateMs'] = 248
+        ..['myRttSampleSequence'] = 7
+        ..['transitions'] = [
+          {
+            'type': 'card_played',
+            'actor': 'self',
+            'card': card('card_001', 'red', 'star', 1),
+            'targetPileId': 'pile_1',
+          },
+          {
+            'type': 'card_played',
+            'actor': 'opponent',
+            'card': card('card_002', 'blue', 'tree', 2),
+            'targetPileId': 'pile_2',
+          },
+        ];
+
+      final parsed = GameStateView.fromJson(state);
+
+      expect(parsed.myRttEstimateMs, 248);
+      expect(parsed.myRttSampleSequence, 7);
+      expect(parsed.transitions, hasLength(2));
+      expect(parsed.transitions.first.actor, GameStateTransitionActor.self);
+      expect(parsed.transitions.first.targetPileId, GamePileId.pile1);
+      expect(parsed.transitions.last.actor, GameStateTransitionActor.opponent);
+      expect(parsed.transitions.last.targetPileId, GamePileId.pile2);
+    });
+
+    test('ignores malformed optional feedback without losing core state', () {
+      final state = validState()
+        ..['myRttEstimateMs'] = -10
+        ..['myRttSampleSequence'] = 'future'
+        ..['transitions'] = [
+          {'type': 'future_transition'},
+          'not-an-object',
+        ];
+
+      final parsed = GameStateView.fromJson(state);
+
+      expect(parsed.stateVersion, 1);
+      expect(parsed.myRttEstimateMs, isNull);
+      expect(parsed.myRttSampleSequence, isNull);
+      expect(parsed.transitions, isEmpty);
+    });
+
+    test('ignores a non-list transitions extension', () {
+      final parsed = GameStateView.fromJson(
+        validState()..['transitions'] = {'future': true},
+      );
+
+      expect(parsed.transitions, isEmpty);
     });
 
     test('accepts a non-empty winner id and winner name', () {
@@ -85,6 +145,22 @@ void main() {
             color: GameCardColor.red,
             shape: GameCardShape.star,
             count: 1,
+          ),
+        ),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => state.transitions.add(
+          const GameStateTransition(
+            type: GameStateTransitionType.cardPlayed,
+            actor: GameStateTransitionActor.self,
+            card: GameCard(
+              cardId: 'extra-transition',
+              color: GameCardColor.red,
+              shape: GameCardShape.star,
+              count: 1,
+            ),
+            targetPileId: GamePileId.pile1,
           ),
         ),
         throwsUnsupportedError,

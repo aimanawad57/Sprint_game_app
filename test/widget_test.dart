@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sprint_app/gameplay/game_rules.dart';
 import 'package:sprint_app/models/game/game_card.dart';
 import 'package:sprint_app/models/game/game_move.dart';
+import 'package:sprint_app/models/game/game_state_transition.dart';
 import 'package:sprint_app/models/game/game_state_view.dart';
 import 'package:sprint_app/models/game/rematch_status.dart';
 import 'package:sprint_app/widgets/disconnected_match_banner.dart';
@@ -29,6 +31,24 @@ Future<void> revealAndSettle(WidgetTester tester, Finder finder) async {
 }
 
 void main() {
+  GameStateTransition transition({
+    required String cardId,
+    required GameStateTransitionActor actor,
+    required GamePileId pileId,
+  }) {
+    return GameStateTransition(
+      type: GameStateTransitionType.cardPlayed,
+      actor: actor,
+      card: GameCard(
+        cardId: cardId,
+        color: GameCardColor.red,
+        shape: GameCardShape.star,
+        count: 1,
+      ),
+      targetPileId: pileId,
+    );
+  }
+
   GameStateView buildState({
     int stateVersion = 1,
     String? winnerId,
@@ -37,6 +57,8 @@ void main() {
     GameMatchEndReason? endReason,
     int elapsedTimeMs = 0,
     List<GameCard>? myHand,
+    List<GameStateTransition> transitions = const <GameStateTransition>[],
+    int? myRttEstimateMs,
   }) {
     return GameStateView(
       stateVersion: stateVersion,
@@ -70,7 +92,7 @@ void main() {
       pile1: const CenterPileView(
         topCard: GameCard(
           cardId: 'card_061',
-          color: GameCardColor.orange,
+          color: GameCardColor.red,
           shape: GameCardShape.diamond,
           count: 4,
         ),
@@ -86,6 +108,8 @@ void main() {
       winnerId: winnerId,
       winnerName: winnerName,
       endReason: endReason,
+      transitions: transitions,
+      myRttEstimateMs: myRttEstimateMs,
     );
   }
 
@@ -109,42 +133,87 @@ void main() {
     bool movesEnabled = true,
     String? connectionMessage,
     List<GameCard>? myHand,
-  }) {
-    return tester.pumpWidget(
+    String? pendingCardId,
+    List<GameStateTransition> transitions = const <GameStateTransition>[],
+    int transitionSequence = 0,
+    int transitionRoundSequence = 0,
+    int pileResetSequence = 0,
+    bool pileResetActive = false,
+    int? disconnectDeadlineMs,
+    int? connectionServerTimeMs,
+    int? myRttEstimateMs,
+    int rttSampleSequence = 0,
+    VoidCallback? onIllegalMoveFeedback,
+    MoveSubmitCallback? onIllegalMoveAttempt,
+    VoidCallback? onResultPresentationStarted,
+    int? localReconnectRemainingSeconds,
+    bool localReconnectExpired = false,
+    VoidCallback? onRetryReconnect,
+    VoidCallback? onReturnToMenu,
+    bool disableAnimations = false,
+    bool settleResultPresentation = true,
+  }) async {
+    await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: GameStatePanel(
-            gameState: buildState(
-              stateVersion: stateVersion,
-              winnerId: winnerId,
-              winnerName: winnerName,
-              status: status,
-              endReason: endReason,
-              elapsedTimeMs: elapsedTimeMs,
-              myHand: myHand,
+          body: MediaQuery(
+            data: MediaQueryData(disableAnimations: disableAnimations),
+            child: GameStatePanel(
+              gameState: buildState(
+                stateVersion: stateVersion,
+                winnerId: winnerId,
+                winnerName: winnerName,
+                status: status,
+                endReason: endReason,
+                elapsedTimeMs: elapsedTimeMs,
+                myHand: myHand,
+                transitions: transitions,
+                myRttEstimateMs: myRttEstimateMs,
+              ),
+              currentUserId: currentUserId,
+              onSubmitMove: onSubmitMove ?? (_, _) {},
+              onBack: onBack ?? () {},
+              onViewProfile: onViewProfile,
+              rematchStatus: rematchStatus,
+              onRematchDecision: onRematchDecision,
+              isRematchSubmitting: isRematchSubmitting,
+              isSubmitting: isSubmitting,
+              feedbackMessage: feedbackMessage,
+              movesEnabled: movesEnabled,
+              connectionMessage: connectionMessage,
+              pendingCardId: pendingCardId,
+              transitions: transitions,
+              transitionSequence: transitionSequence,
+              transitionRoundSequence: transitionRoundSequence,
+              pileResetSequence: pileResetSequence,
+              pileResetActive: pileResetActive,
+              disconnectDeadlineMs: disconnectDeadlineMs,
+              connectionServerTimeMs: connectionServerTimeMs,
+              myRttEstimateMs: myRttEstimateMs,
+              rttSampleSequence: rttSampleSequence,
+              onIllegalMoveFeedback: onIllegalMoveFeedback,
+              onIllegalMoveAttempt: onIllegalMoveAttempt,
+              onResultPresentationStarted: onResultPresentationStarted,
+              localReconnectRemainingSeconds: localReconnectRemainingSeconds,
+              localReconnectExpired: localReconnectExpired,
+              onRetryReconnect: onRetryReconnect,
+              onReturnToMenu: onReturnToMenu,
             ),
-            currentUserId: currentUserId,
-            onSubmitMove: onSubmitMove ?? (_, _) {},
-            onBack: onBack ?? () {},
-            onViewProfile: onViewProfile,
-            rematchStatus: rematchStatus,
-            onRematchDecision: onRematchDecision,
-            isRematchSubmitting: isRematchSubmitting,
-            isSubmitting: isSubmitting,
-            feedbackMessage: feedbackMessage,
-            movesEnabled: movesEnabled,
-            connectionMessage: connectionMessage,
           ),
         ),
       ),
     );
+    if (status == GameMatchStatus.finished && settleResultPresentation) {
+      await tester.pump(const Duration(milliseconds: 1800));
+      await tester.pump();
+    }
   }
 
   testWidgets('displays public state and the private hand', (tester) async {
     await pumpPanel(tester);
 
-    expect(find.text('active'), findsOneWidget);
-    expect(find.text('State version'), findsOneWidget);
+    expect(find.text('Game Ongoing'), findsOneWidget);
+    expect(find.text('State version'), findsNothing);
 
     final opponentDeck = find.byKey(const ValueKey('opponentDeck'));
     await revealAndSettle(tester, opponentDeck);
@@ -433,6 +502,389 @@ void main() {
     expect(tester.widget<Text>(value).data, '2');
   });
 
+  testWidgets('countdown emits every value and GO once', (tester) async {
+    final cues = <int>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundCountdownOverlay(
+          durationMs: 5000,
+          roundNumber: 1,
+          onCountdownChanged: cues.add,
+        ),
+      ),
+    );
+    expect(cues, [5]);
+
+    for (var value = 4; value >= 0; value--) {
+      await tester.pump(const Duration(seconds: 1));
+      expect(cues.last, value);
+    }
+    expect(cues, [5, 4, 3, 2, 1, 0]);
+
+    await tester.pump(const Duration(seconds: 2));
+    expect(cues, [5, 4, 3, 2, 1, 0], reason: 'GO must not repeat');
+  });
+
+  testWidgets('countdown handles skipped ticks and resync without replay', (
+    tester,
+  ) async {
+    final cues = <int>[];
+    Future<void> pumpCountdown({
+      required int startsAtMs,
+      required int serverTimeMs,
+      int? networkRttMs,
+    }) {
+      return tester.pumpWidget(
+        MaterialApp(
+          home: RoundCountdownOverlay(
+            durationMs: 5000,
+            startsAtMs: startsAtMs,
+            serverTimeMs: serverTimeMs,
+            networkRttMs: networkRttMs,
+            roundNumber: 1,
+            onCountdownChanged: cues.add,
+          ),
+        ),
+      );
+    }
+
+    await pumpCountdown(startsAtMs: 105000, serverTimeMs: 100000);
+    await tester.pump(const Duration(seconds: 2));
+    expect(cues, [5, 3]);
+
+    await pumpCountdown(startsAtMs: 105000, serverTimeMs: 102000);
+    await tester.pump();
+    expect(cues, [5, 3], reason: 'a resync must not replay visible cues');
+
+    await tester.pump(const Duration(seconds: 3));
+    expect(cues, [5, 3, 0], reason: 'a skipped tick still emits GO once');
+    await tester.pump(const Duration(seconds: 1));
+    expect(cues, [5, 3, 0]);
+
+    await pumpCountdown(
+      startsAtMs: 205000,
+      serverTimeMs: 200000,
+      networkRttMs: 100000,
+    );
+    final value = find.byKey(const ValueKey('rematchCountdownValue'));
+    expect(
+      tester.widget<Text>(value).data,
+      '5',
+      reason: 'half-RTT compensation is capped at 500ms',
+    );
+    expect(cues.last, 5, reason: 'a new deadline resets cue deduplication');
+  });
+
+  testWidgets('selected cards do not reveal which pile is legal', (
+    tester,
+  ) async {
+    await pumpPanel(tester);
+    final handCard = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, handCard);
+    await tester.tap(handCard);
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('legalTargetIcon')), findsNothing);
+    expect(find.byKey(const ValueKey('illegalTargetIcon')), findsNothing);
+    expect(find.text('NO MATCH'), findsNothing);
+
+    final cardSemantics = tester.getSemantics(handCard);
+    expect(cardSemantics.label, contains('red, 1 star'));
+    expect(cardSemantics.value, 'Selected');
+    final pile1Semantics = tester.getSemantics(
+      find.byKey(const ValueKey('pile1Semantics')),
+    );
+    final pile2Semantics = tester.getSemantics(
+      find.byKey(const ValueKey('pile2Semantics')),
+    );
+    expect(pile1Semantics.value, 'Center pile');
+    expect(pile2Semantics.value, 'Center pile');
+    expect(pile1Semantics.hint, 'Double tap to try the selected card');
+    expect(pile2Semantics.hint, pile1Semantics.hint);
+    expect(pile1Semantics.hint, isNot(contains(illegalMoveHint)));
+  });
+
+  testWidgets('illegal pile taps explain the rule and never submit', (
+    tester,
+  ) async {
+    var submissions = 0;
+    var feedbackCues = 0;
+    String? rejectedCardId;
+    GamePileId? rejectedPileId;
+    await pumpPanel(
+      tester,
+      onSubmitMove: (_, _) => submissions += 1,
+      onIllegalMoveFeedback: () => feedbackCues += 1,
+      onIllegalMoveAttempt: (cardId, pileId) {
+        rejectedCardId = cardId;
+        rejectedPileId = pileId;
+      },
+    );
+    final illegalCard = find.byKey(const ValueKey('card_002'));
+    await revealAndSettle(tester, illegalCard);
+    await tester.tap(illegalCard);
+    final pile1 = find.byKey(const ValueKey('centerPile1'));
+    await revealAndSettle(tester, pile1);
+    await tester.tap(pile1);
+    await tester.pump();
+
+    expect(submissions, 0);
+    expect(feedbackCues, 1);
+    expect(rejectedCardId, 'card_002');
+    expect(rejectedPileId, GamePileId.pile1);
+    expect(find.byKey(const ValueKey('rejectedTargetIcon')), findsOneWidget);
+    expect(find.text(illegalMoveHint), findsOneWidget);
+    expect(
+      tester.getSemantics(find.byKey(const ValueKey('pile1Semantics'))).value,
+      'Move rejected',
+    );
+    final semantics = tester.getSemantics(
+      find.byKey(const ValueKey('moveFeedbackSemantics')),
+    );
+    expect(semantics.label, illegalMoveHint);
+    expect(semantics.flagsCollection.isLiveRegion, isTrue);
+  });
+
+  testWidgets(
+    'transition batches are measured, serialized, and survive empties',
+    (tester) async {
+      final first = transition(
+        cardId: 'played-1',
+        actor: GameStateTransitionActor.opponent,
+        pileId: GamePileId.pile1,
+      );
+      final second = transition(
+        cardId: 'played-2',
+        actor: GameStateTransitionActor.self,
+        pileId: GamePileId.pile2,
+      );
+      await pumpPanel(tester);
+      await pumpPanel(
+        tester,
+        stateVersion: 2,
+        transitions: [first],
+        transitionSequence: 11,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(
+        find.byKey(const ValueKey('transitionFlight-0-2-0')),
+        findsOneWidget,
+      );
+
+      await pumpPanel(
+        tester,
+        stateVersion: 3,
+        transitions: [second],
+        transitionSequence: 12,
+      );
+      await pumpPanel(
+        tester,
+        stateVersion: 4,
+        transitions: const <GameStateTransition>[],
+        transitionSequence: 13,
+      );
+      await tester.pump(const Duration(milliseconds: 120));
+      expect(
+        find.byKey(const ValueKey('transitionFlight-0-2-0')),
+        findsOneWidget,
+        reason: 'a newer batch must not interrupt the active flight',
+      );
+
+      await tester.pump(const Duration(milliseconds: 260));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(
+        find.byKey(const ValueKey('transitionFlight-0-3-0')),
+        findsOneWidget,
+        reason: 'an empty snapshot must not erase a queued batch',
+      );
+
+      await tester.pump(const Duration(milliseconds: 360));
+      await tester.pump();
+      await pumpPanel(
+        tester,
+        stateVersion: 3,
+        transitions: [second],
+        transitionSequence: 99,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        find.byKey(const ValueKey('transitionFlight-0-3-0')),
+        findsNothing,
+        reason: 'the same round and state version must not replay',
+      );
+
+      await pumpPanel(
+        tester,
+        stateVersion: 3,
+        transitions: [second],
+        transitionRoundSequence: 1,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(
+        find.byKey(const ValueKey('transitionFlight-1-3-0')),
+        findsOneWidget,
+        reason: 'the same state version in a new round is a new batch',
+      );
+    },
+  );
+
+  testWidgets('overflowing transition batches compress into a landing pulse', (
+    tester,
+  ) async {
+    await pumpPanel(tester);
+    for (var sequence = 1; sequence <= 8; sequence++) {
+      await pumpPanel(
+        tester,
+        stateVersion: sequence + 1,
+        transitions: [
+          transition(
+            cardId: 'queued-$sequence',
+            actor: GameStateTransitionActor.opponent,
+            pileId: GamePileId.pile1,
+          ),
+        ],
+        transitionSequence: sequence,
+      );
+    }
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('landingPulse-1')),
+      findsOneWidget,
+      reason: 'a dropped visual batch still confirms its authoritative landing',
+    );
+  });
+
+  testWidgets('reduced motion replaces card flight with static feedback', (
+    tester,
+  ) async {
+    final move = transition(
+      cardId: 'played-reduced',
+      actor: GameStateTransitionActor.opponent,
+      pileId: GamePileId.pile1,
+    );
+    await pumpPanel(
+      tester,
+      transitions: [move],
+      transitionSequence: 20,
+      disableAnimations: true,
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('reducedMotionMoveFeedback')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('transitionFlight-0-1-0')), findsNothing);
+    await tester.pump(const Duration(milliseconds: 340));
+    expect(
+      find.byKey(const ValueKey('reducedMotionMoveFeedback')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('pile reset feedback is nonmodal and does not block a move', (
+    tester,
+  ) async {
+    String? submittedCard;
+    await pumpPanel(
+      tester,
+      pileResetActive: true,
+      pileResetSequence: 1,
+      onSubmitMove: (cardId, _) => submittedCard = cardId,
+    );
+    expect(find.byKey(const ValueKey('pileResetPresentation')), findsOneWidget);
+
+    final card = find.byKey(const ValueKey('card_001'));
+    await revealAndSettle(tester, card);
+    await tester.tap(card);
+    final pile = find.byKey(const ValueKey('centerPile1'));
+    await revealAndSettle(tester, pile);
+    await tester.tap(pile);
+    expect(submittedCard, 'card_001');
+  });
+
+  testWidgets(
+    'result presentation waits for the final move and then unmounts',
+    (tester) async {
+      var presentationStarts = 0;
+      final finalMove = transition(
+        cardId: 'winning-card',
+        actor: GameStateTransitionActor.self,
+        pileId: GamePileId.pile1,
+      );
+      await pumpPanel(tester);
+      await pumpPanel(
+        tester,
+        stateVersion: 2,
+        status: GameMatchStatus.finished,
+        winnerId: 'player-a',
+        transitions: [finalMove],
+        transitionSequence: 30,
+        onResultPresentationStarted: () => presentationStarts += 1,
+        settleResultPresentation: false,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.byKey(const ValueKey('resultPresentation')), findsNothing);
+      expect(presentationStarts, 0);
+
+      await tester.pump(const Duration(milliseconds: 170));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('resultPresentation')), findsOneWidget);
+      expect(presentationStarts, 1);
+      expect(
+        tester
+            .widget<AbsorbPointer>(
+              find.byKey(const ValueKey('resultPresentationBlocker')),
+            )
+            .absorbing,
+        isTrue,
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1800));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('resultPresentation')), findsNothing);
+      expect(presentationStarts, 1);
+    },
+  );
+
+  testWidgets('initial reduced-motion result reports presentation once', (
+    tester,
+  ) async {
+    var presentationStarts = 0;
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      winnerId: 'player-a',
+      disableAnimations: true,
+      settleResultPresentation: false,
+      onResultPresentationStarted: () => presentationStarts += 1,
+    );
+    expect(find.byKey(const ValueKey('resultPresentation')), findsOneWidget);
+    expect(presentationStarts, 1);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(presentationStarts, 1);
+  });
+
+  testWidgets('finished state without a winner has a neutral result', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      status: GameMatchStatus.finished,
+      settleResultPresentation: false,
+      disableAnimations: true,
+    );
+    expect(find.text('MATCH COMPLETE'), findsOneWidget);
+    expect(find.text('DEFEAT'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 1100));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('resultPresentation')), findsNothing);
+  });
+
   testWidgets('shows a losing result when the opponent wins', (tester) async {
     await pumpPanel(
       tester,
@@ -663,6 +1115,179 @@ void main() {
 
     expect(find.byIcon(Icons.check_circle), findsNothing);
     expect(submissionCount, 0);
+  });
+
+  testWidgets('opponent reconnect countdown uses RTT and stops at zero', (
+    tester,
+  ) async {
+    await pumpPanel(
+      tester,
+      movesEnabled: false,
+      connectionMessage: 'Opponent disconnected. Waiting for reconnection...',
+      disconnectDeadlineMs: 101100,
+      connectionServerTimeMs: 100000,
+      myRttEstimateMs: 200,
+    );
+    expect(find.text('1 second until the match is forfeited'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 1050));
+    expect(find.text('0 seconds until the match is forfeited'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('local reconnect overlay exposes retry and menu recovery', (
+    tester,
+  ) async {
+    var retried = false;
+    var returned = false;
+    await pumpPanel(
+      tester,
+      movesEnabled: false,
+      localReconnectRemainingSeconds: 7,
+    );
+    expect(find.text('Reconnecting… 7 s'), findsOneWidget);
+
+    await pumpPanel(
+      tester,
+      movesEnabled: false,
+      localReconnectRemainingSeconds: 0,
+      localReconnectExpired: true,
+      onRetryReconnect: () => retried = true,
+      onReturnToMenu: () => returned = true,
+    );
+    await tester.tap(find.byKey(const ValueKey('retryReconnectButton')));
+    await tester.tap(find.byKey(const ValueKey('returnToMenuButton')));
+    expect(retried, isTrue);
+    expect(returned, isTrue);
+  });
+
+  testWidgets('RTT warning is smoothed, recovers, and expires when stale', (
+    tester,
+  ) async {
+    await pumpPanel(tester, myRttEstimateMs: 250, rttSampleSequence: 1);
+    expect(
+      find.byKey(const ValueKey('degradedConnectionIndicator')),
+      findsNothing,
+    );
+    await pumpPanel(tester, myRttEstimateMs: 250, rttSampleSequence: 2);
+    expect(
+      find.byKey(const ValueKey('degradedConnectionIndicator')),
+      findsOneWidget,
+    );
+    expect(find.text('250 ms'), findsOneWidget);
+    final degradedSemantics = tester.getSemantics(
+      find.byKey(const ValueKey('degradedConnectionIndicator')),
+    );
+    expect(degradedSemantics.label, contains('250 milliseconds'));
+
+    for (var sequence = 3; sequence <= 6; sequence++) {
+      await pumpPanel(
+        tester,
+        myRttEstimateMs: 100,
+        rttSampleSequence: sequence,
+      );
+    }
+    expect(
+      find.byKey(const ValueKey('degradedConnectionIndicator')),
+      findsNothing,
+    );
+
+    await pumpPanel(tester, myRttEstimateMs: 500, rttSampleSequence: 7);
+    expect(find.text('Poor'), findsOneWidget);
+    expect(find.byKey(const ValueKey('degradedConnectionRtt')), findsOneWidget);
+    await tester.pump(const Duration(seconds: 9));
+    expect(
+      find.byKey(const ValueKey('degradedConnectionIndicator')),
+      findsNothing,
+      reason: 'old latency samples must not leave a permanent warning',
+    );
+  });
+
+  testWidgets('fresh poor RTT bypasses smoothing immediately', (tester) async {
+    await pumpPanel(tester, myRttEstimateMs: 90, rttSampleSequence: 1);
+    await pumpPanel(tester, myRttEstimateMs: 95, rttSampleSequence: 2);
+    await pumpPanel(tester, myRttEstimateMs: 500, rttSampleSequence: 3);
+    expect(find.text('Poor'), findsOneWidget);
+  });
+
+  testWidgets('header remains compact on a narrow phone', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpPanel(tester);
+    expect(find.text('Game Ongoing'), findsOneWidget);
+    expect(find.text('State version'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('gameFeedbackSettingsButton')),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tablet layout supports normal and reduced motion', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1024, 1366);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpPanel(tester);
+    expect(find.text('Game Ongoing'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await pumpPanel(
+      tester,
+      transitions: [
+        transition(
+          cardId: 'tablet-reduced-card',
+          actor: GameStateTransitionActor.opponent,
+          pileId: GamePileId.pile2,
+        ),
+      ],
+      transitionSequence: 120,
+      disableAnimations: true,
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('reducedMotionMoveFeedback')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('all presentation controllers can be disposed mid-animation', (
+    tester,
+  ) async {
+    final move = transition(
+      cardId: 'dispose-card',
+      actor: GameStateTransitionActor.opponent,
+      pileId: GamePileId.pile1,
+    );
+    await pumpPanel(
+      tester,
+      transitions: [move],
+      transitionSequence: 99,
+      pileResetActive: true,
+      pileResetSequence: 4,
+    );
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RoundCountdownOverlay(durationMs: 5000, roundNumber: 1),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 30));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 1));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('disconnected match banner shows reconnect and abandon actions', (

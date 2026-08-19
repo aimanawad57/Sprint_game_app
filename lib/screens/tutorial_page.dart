@@ -1,9 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/game/game_card.dart';
 import '../models/game/game_move.dart';
+import '../models/game/game_state_transition.dart';
 import '../models/game/game_state_view.dart';
+import '../services/game_feedback_service.dart';
 import '../services/onboarding_progress_repository.dart';
+import '../widgets/game_feedback_scope.dart';
 import '../widgets/game_state_panel.dart';
 import 'practice_page.dart';
 
@@ -19,6 +24,18 @@ class _TutorialPageState extends State<TutorialPage> {
   int _step = 0;
   String? _feedback;
   bool _invalidAttempted = false;
+  bool _finalMoveAccepted = false;
+  GameFeedbackService? _feedbackService;
+  List<GameStateTransition> _transitions = const <GameStateTransition>[];
+  int _transitionSequence = 0;
+  int _roundSequence = 0;
+  Timer? _completionTimer;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _feedbackService = GameFeedbackScope.maybeOf(context);
+  }
 
   static const _redStar2 = GameCard(
     cardId: 'tutorial_red_star_2',
@@ -83,23 +100,32 @@ class _TutorialPageState extends State<TutorialPage> {
   };
 
   GameStateView get _state {
-    final hand = switch (_step) {
-      0 => [_redTree4],
-      1 => [_blueStar4],
-      2 => [_greenFlag2],
-      3 => [_purpleCircle5, _redTree4],
-      4 => [_orangeHouse3],
-      _ => [_blueStar4],
-    };
+    final hand = _finalMoveAccepted
+        ? const <GameCard>[]
+        : switch (_step) {
+            0 => [_redTree4],
+            1 => [_blueStar4],
+            2 => [_greenFlag2],
+            3 => [_purpleCircle5, _redTree4],
+            4 => [_orangeHouse3],
+            _ => [_blueStar4],
+          };
+    final finalTransition = _finalMoveAccepted && _transitions.isNotEmpty
+        ? _transitions.single
+        : null;
     return GameStateView(
-      stateVersion: _step + 1,
+      stateVersion: _step + 1 + (_finalMoveAccepted ? 1 : 0),
       status: GameMatchStatus.active,
       elapsedTimeMs: _step * 1500,
       myHand: hand,
       myDeckCount: 0,
       opponentHandCount: _step == 5 ? 1 : 3,
       opponentDeckCount: _step == 5 ? 0 : 4,
-      pile1: CenterPileView(topCard: _redStar2),
+      pile1: CenterPileView(
+        topCard: finalTransition?.targetPileId == GamePileId.pile1
+            ? finalTransition!.card
+            : _redStar2,
+      ),
       pile2: CenterPileView(topCard: _step == 4 ? _orangeHouse3 : _greenFlag2),
       winnerId: null,
       winnerName: null,
@@ -117,6 +143,7 @@ class _TutorialPageState extends State<TutorialPage> {
       return;
     }
     if (_step == 3 && !_invalidAttempted) {
+      unawaited(_feedbackService?.illegalMove());
       setState(
         () => _feedback =
             'First try the purple circle so you can see how an invalid move is handled.',
@@ -144,25 +171,75 @@ class _TutorialPageState extends State<TutorialPage> {
       );
       return;
     }
-    _advance();
+    _advance(card, pile);
   }
 
-  void _advance() {
+  void _advance(GameCard card, GamePileId pile) {
+    final transition = GameStateTransition(
+      type: GameStateTransitionType.cardPlayed,
+      actor: GameStateTransitionActor.self,
+      card: card,
+      targetPileId: pile,
+    );
     if (_step >= _messages.length - 1) {
-      widget.repository.update((value) => value.completeTutorial());
-      setState(() => _step = _messages.length);
+      unawaited(widget.repository.update((value) => value.completeTutorial()));
+      setState(() {
+        _transitions = <GameStateTransition>[transition];
+        _transitionSequence += 1;
+        _finalMoveAccepted = true;
+        _feedback = null;
+      });
+      unawaited(_feedbackService?.acceptedMove());
+      _completionTimer?.cancel();
+      _completionTimer = Timer(const Duration(milliseconds: 420), () {
+        if (!mounted) return;
+        setState(() => _step = _messages.length);
+        unawaited(_feedbackService?.win());
+      });
     } else {
       setState(() {
+        _transitions = <GameStateTransition>[transition];
+        _transitionSequence += 1;
         _step++;
         _invalidAttempted = false;
         _feedback = null;
       });
+      unawaited(_feedbackService?.acceptedMove());
     }
+  }
+
+  void _previousLesson() {
+    _completionTimer?.cancel();
+    setState(() {
+      _step--;
+      _feedback = null;
+      _invalidAttempted = false;
+      _finalMoveAccepted = false;
+      _transitions = const <GameStateTransition>[];
+    });
+  }
+
+  void _restartTutorial() {
+    _completionTimer?.cancel();
+    setState(() {
+      _step = 0;
+      _feedback = null;
+      _invalidAttempted = false;
+      _finalMoveAccepted = false;
+      _transitions = const <GameStateTransition>[];
+      _roundSequence += 1;
+    });
   }
 
   Future<void> _skip() async {
     await widget.repository.update((value) => value.dismissTutorialPrompt());
     if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  void dispose() {
+    _completionTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -204,23 +281,10 @@ class _TutorialPageState extends State<TutorialPage> {
         actions: [
           IconButton(
             tooltip: 'Previous lesson',
-            onPressed: _step == 0
-                ? null
-                : () => setState(() {
-                    _step--;
-                    _feedback = null;
-                    _invalidAttempted = false;
-                  }),
+            onPressed: _step == 0 ? null : _previousLesson,
             icon: const Icon(Icons.undo),
           ),
-          TextButton(
-            onPressed: () => setState(() {
-              _step = 0;
-              _feedback = null;
-              _invalidAttempted = false;
-            }),
-            child: const Text('Restart'),
-          ),
+          TextButton(onPressed: _restartTutorial, child: const Text('Restart')),
           TextButton(onPressed: _skip, child: const Text('Skip')),
         ],
       ),
@@ -253,8 +317,16 @@ class _TutorialPageState extends State<TutorialPage> {
               gameState: _state,
               currentUserId: 'tutorial-player',
               onSubmitMove: _submit,
+              onIllegalMoveAttempt: _submit,
               onBack: () => Navigator.of(context).pop(),
-              movesEnabled: true,
+              movesEnabled: !_finalMoveAccepted,
+              transitions: _transitions,
+              transitionSequence: _transitionSequence,
+              transitionRoundSequence: _roundSequence,
+              onCardSelectedFeedback: () =>
+                  unawaited(_feedbackService?.selection()),
+              onIllegalMoveFeedback: () =>
+                  unawaited(_feedbackService?.illegalMove()),
               coachingMessage: _step == _messages.length - 1
                   ? 'No hints this time—find the legal match yourself.'
                   : 'Select the glowing card, then tap the glowing center pile.',

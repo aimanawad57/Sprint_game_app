@@ -18,9 +18,14 @@ function loadRuntimeForTest() {
     "initializeRematchRound," +
     "handleRematchDecision," +
     "rematchTimeoutMs," +
+    "disconnectTimeoutMs," +
+    "rttEmaAlpha," +
     "buildPlayerStateView," +
+    "buildConnectionChangedPayload," +
+    "recordPlayerRttSample," +
     "calculateElapsedTimeMs," +
     "applySubmitMove," +
+    "cardsMatch," +
     "hasAnyLegalMove," +
     "isGameStuck," +
     "reshuffleCenterPiles," +
@@ -80,6 +85,17 @@ function readDocumentedCatalog() {
     const [card_id, color, shape, count] = line.split(",");
     return {card_id, color, shape, count: Number(count)};
   });
+}
+
+function readCardMatchCases() {
+  const fixturePath = path.resolve(
+    __dirname,
+    "../../docs/game-contract/card-match-cases.json"
+  );
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+  assert.equal(fixture.schemaVersion, 1);
+  assert.equal(Array.isArray(fixture.cases), true);
+  return fixture.cases;
 }
 
 function createConnectedWaitingState(runtime) {
@@ -194,6 +210,18 @@ test("runtime card catalog matches the reviewed CSV exactly", () => {
   assert.deepEqual(normalize(runtime.CARD_CATALOG), readDocumentedCatalog());
 });
 
+test("server card matching agrees with the shared client contract cases", () => {
+  const cases = readCardMatchCases();
+  assert.ok(cases.length >= 6);
+  cases.forEach((matchCase) => {
+    assert.equal(
+      runtime.cardsMatch(matchCase.playedCard, matchCase.topCard),
+      matchCase.matches,
+      matchCase.name
+    );
+  });
+});
+
 test("catalog validation enforces size, IDs, attributes, and count", () => {
   assert.doesNotThrow(() => runtime.validateCardCatalog(runtime.CARD_CATALOG));
 
@@ -302,6 +330,9 @@ test("private views expose only the viewer hand and public counts", () => {
   assert.equal(viewA.stateVersion, 1);
   assert.equal(viewA.status, runtime.MatchStatus.Active);
   assert.equal(viewA.winnerName, null);
+  assert.deepEqual(normalize(viewA.transitions), []);
+  assert.equal(viewA.myRttEstimateMs, null);
+  assert.equal(viewA.myRttSampleSequence, 0);
 
   const originalStateColor = state.players["player-a"].hand[0].color;
   viewA.myHand[0].color = runtime.CardColor.Purple;
@@ -310,6 +341,99 @@ test("private views expose only the viewer hand and public counts", () => {
     () => runtime.buildPlayerStateView(state, "outsider"),
     /outside the match/
   );
+});
+
+test("player views expose only the viewer RTT and viewer-relative public transitions", () => {
+  const state = createInitializedState(runtime);
+  state.players["player-a"].rttEstimateMs = 237.9;
+  state.players["player-a"].rttSampleSequence = 4;
+  state.players["player-b"].rttEstimateMs = 481.2;
+  state.players["player-b"].rttSampleSequence = 9;
+  const transitions = [
+    {
+      type: "card_played",
+      playerId: "player-b",
+      card: card(
+        "public_b_move",
+        runtime.CardColor.Green,
+        runtime.CardShape.Star,
+        3
+      ),
+      targetPileId: runtime.PileId.Pile2
+    },
+    {
+      type: "card_played",
+      playerId: "player-a",
+      card: card(
+        "public_a_move",
+        runtime.CardColor.Red,
+        runtime.CardShape.Circle,
+        2
+      ),
+      targetPileId: runtime.PileId.Pile1
+    }
+  ];
+
+  const viewA = runtime.buildPlayerStateView(state, "player-a", 5000, transitions);
+  const viewB = runtime.buildPlayerStateView(state, "player-b", 5000, transitions);
+
+  assert.equal(viewA.myRttEstimateMs, 237);
+  assert.equal(viewB.myRttEstimateMs, 481);
+  assert.equal(viewA.myRttSampleSequence, 4);
+  assert.equal(viewB.myRttSampleSequence, 9);
+  assert.deepEqual(
+    normalize(viewA.transitions.map((transition) => transition.actor)),
+    ["opponent", "self"]
+  );
+  assert.deepEqual(
+    normalize(viewB.transitions.map((transition) => transition.actor)),
+    ["self", "opponent"]
+  );
+  assert.deepEqual(
+    normalize(viewA.transitions.map((transition) => transition.card.card_id)),
+    ["public_b_move", "public_a_move"]
+  );
+  assert.equal(viewA.transitions[0].targetPileId, runtime.PileId.Pile2);
+  assert.equal("playerId" in viewA.transitions[0], false);
+  assert.equal(JSON.stringify(viewA).includes("481.2"), false);
+  assert.equal(JSON.stringify(viewA).includes('"myRttSampleSequence":9'), false);
+
+  viewA.transitions[0].card.color = runtime.CardColor.Purple;
+  assert.equal(transitions[0].card.color, runtime.CardColor.Green);
+});
+
+test("RTT samples use an EMA and advance freshness even when the value repeats", () => {
+  const state = createInitializedState(runtime);
+  const player = state.players["player-a"];
+
+  runtime.recordPlayerRttSample(player, 100);
+  assert.equal(player.rttEstimateMs, 100);
+  assert.equal(player.rttSampleSequence, 1);
+
+  runtime.recordPlayerRttSample(player, 100);
+  assert.equal(player.rttEstimateMs, 100);
+  assert.equal(player.rttSampleSequence, 2);
+
+  runtime.recordPlayerRttSample(player, 300);
+  assert.equal(runtime.rttEmaAlpha, 0.25);
+  assert.equal(player.rttEstimateMs, 150);
+  assert.equal(player.rttSampleSequence, 3);
+
+  const ownView = runtime.buildPlayerStateView(state, "player-a");
+  const opponentView = runtime.buildPlayerStateView(state, "player-b");
+  assert.equal(ownView.myRttEstimateMs, 150);
+  assert.equal(ownView.myRttSampleSequence, 3);
+  assert.equal(opponentView.myRttEstimateMs, null);
+  assert.equal(opponentView.myRttSampleSequence, 0);
+
+  // A live state created by an older runtime may not have the new fields yet.
+  // The first post-upgrade sample should initialize them instead of producing
+  // NaN values.
+  player.rttEstimateMs = undefined;
+  player.rttSampleSequence = undefined;
+  runtime.recordPlayerRttSample(player, 80);
+  assert.equal(player.rttEstimateMs, 80);
+  assert.equal(player.rttSampleSequence, 1);
 });
 
 test("elapsed match time is authoritative and never negative", () => {
@@ -393,12 +517,35 @@ test("match lifecycle sends connection changes before private matchStarted event
     normalize(state.players["player-b"].hand.map((card) => card.card_id))
   );
   assert.equal(startedA.data.winnerName, null);
+  assert.equal(startedA.data.myRttSampleSequence, 0);
+  assert.notEqual(state.players["player-a"].lastStateSentAtMs, null);
+  assert.equal(
+    state.players["player-a"].lastStateSentAtMs,
+    state.players["player-b"].lastStateSentAtMs
+  );
   assert.equal(state.players["player-a"].displayName, "Alice");
   assert.equal(state.players["player-b"].displayName, "Bob");
 
   const cardSnapshot = normalize(collectStateCards(state));
   runtime.sprintMatchLeave(null, logger, null, dispatcher, 4, state, [presenceA]);
+  const disconnected = calls.at(-1);
+  assert.equal(disconnected.opcode, runtime.ServerOpcode.ConnectionChanged);
+  assert.equal(
+    disconnected.data.disconnectDeadlineMs - disconnected.data.serverTimeMs,
+    runtime.disconnectTimeoutMs
+  );
+  assert.equal(disconnected.data.disconnectGraceMs, runtime.disconnectTimeoutMs);
+  state.players["player-a"].lastStateSentAtMs = 123;
+  state.players["player-b"].lastStateSentAtMs = 456;
   runtime.sprintMatchJoin(null, logger, null, dispatcher, 5, state, [presenceA]);
+  const reconnected = calls
+    .filter((call) => call.opcode === runtime.ServerOpcode.ConnectionChanged)
+    .at(-1);
+  assert.equal(reconnected.data.disconnectDeadlineMs, null);
+  assert.equal(typeof reconnected.data.serverTimeMs, "number");
+  assert.equal(reconnected.data.disconnectGraceMs, runtime.disconnectTimeoutMs);
+  assert.ok(state.players["player-a"].lastStateSentAtMs > 123);
+  assert.equal(state.players["player-b"].lastStateSentAtMs, 456);
   assert.equal(state.stateVersion, 1);
   assert.deepEqual(normalize(collectStateCards(state)), cardSnapshot);
   assert.equal(
@@ -415,6 +562,30 @@ test("match lifecycle sends connection changes before private matchStarted event
     normalize(state.players["player-a"].hand)
   );
   assert.equal(resyncCalls[0].data.stateVersion, 1);
+  assert.deepEqual(normalize(resyncCalls[0].data.transitions), []);
+});
+
+test("connection payload uses the earliest authoritative disconnect deadline", () => {
+  const state = createInitializedState(runtime);
+  state.players["player-a"].connected = false;
+  state.players["player-a"].disconnectedAtMs = 1500;
+  state.players["player-b"].connected = false;
+  state.players["player-b"].disconnectedAtMs = 1000;
+  delete state.presences["player-a"];
+  delete state.presences["player-b"];
+
+  const payload = runtime.buildConnectionChangedPayload(state, [], 7000);
+
+  assert.equal(payload.serverTimeMs, 7000);
+  assert.equal(payload.disconnectDeadlineMs, 1000 + runtime.disconnectTimeoutMs);
+  assert.equal(payload.disconnectGraceMs, runtime.disconnectTimeoutMs);
+  assert.equal(payload.connectedCount, 0);
+
+  state.status = runtime.MatchStatus.Finished;
+  assert.equal(
+    runtime.buildConnectionChangedPayload(state, [], 8000).disconnectDeadlineMs,
+    null
+  );
 });
 
 test("player views use account display names instead of generated presence usernames", () => {
@@ -995,11 +1166,40 @@ test("pending move batch accepts valid moves on different piles together", () =>
     1
   );
 
-  const result = runtime.applyPendingSubmitMoveBatch(state, [moveA, moveB], 1200);
+  // Deliberately reverse the input to prove transitions follow authoritative
+  // reaction-adjusted resolution order rather than array/inbox order.
+  const result = runtime.applyPendingSubmitMoveBatch(state, [moveB, moveA], 1200);
 
   assert.equal(result.changed, true);
   assert.equal(result.gameEnded, false);
   assert.deepEqual(normalize(result.acceptedPlayerIds), ["player-a", "player-b"]);
+  assert.deepEqual(
+    normalize(result.transitions),
+    [
+      {
+        type: "card_played",
+        playerId: "player-a",
+        card: {
+          card_id: "player_a_move",
+          color: runtime.CardColor.Red,
+          shape: runtime.CardShape.Star,
+          count: 1
+        },
+        targetPileId: runtime.PileId.Pile1
+      },
+      {
+        type: "card_played",
+        playerId: "player-b",
+        card: {
+          card_id: "player_b_move",
+          color: runtime.CardColor.Green,
+          shape: runtime.CardShape.Diamond,
+          count: 2
+        },
+        targetPileId: runtime.PileId.Pile2
+      }
+    ]
+  );
   assert.equal(result.rejections.length, 0);
   assert.equal(state.stateVersion, versionBeforeMove + 1);
   assert.equal(state.centerPiles.pile_1.at(-1).card_id, "player_a_move");
@@ -1008,7 +1208,8 @@ test("pending move batch accepts valid moves on different piles together", () =>
 
 test("same-pile conflict is won by reaction-adjusted time, not arrival order", () => {
   const state = createInitializedState(runtime);
-  state.lastBroadcastAtMs = 1000;
+  state.players["player-a"].lastStateSentAtMs = 1000;
+  state.players["player-b"].lastStateSentAtMs = 1000;
   state.nextTieBreakerPlayerId = "player-a";
   state.players["player-a"].hand = [
     card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1)
@@ -1072,7 +1273,7 @@ test("same-pile conflict is won by reaction-adjusted time, not arrival order", (
 
 test("an inflated reaction-time claim is clamped to the observed elapsed time", () => {
   const state = createInitializedState(runtime);
-  state.lastBroadcastAtMs = 1000;
+  state.players["player-a"].lastStateSentAtMs = 1000;
   state.players["player-a"].hand = [
     card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1)
   ];
@@ -1099,9 +1300,59 @@ test("an inflated reaction-time claim is clamped to the observed elapsed time", 
   assert.equal(move.networkRttEstimateMs, 0);
 });
 
+test("reaction timing uses each sender's private state-send anchor", () => {
+  const state = createInitializedState(runtime);
+  state.players["player-a"].lastStateSentAtMs = 1000;
+  state.players["player-b"].lastStateSentAtMs = 2000;
+  state.players["player-a"].hand = [
+    card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1)
+  ];
+  state.players["player-b"].hand = [
+    card("player_b_move", runtime.CardColor.Green, runtime.CardShape.Flag, 3)
+  ];
+  state.centerPiles.pile_1 = [
+    card("pile_1_top", runtime.CardColor.Red, runtime.CardShape.Flag, 5)
+  ];
+  state.centerPiles.pile_2 = [
+    card("pile_2_top", runtime.CardColor.Green, runtime.CardShape.Circle, 2)
+  ];
+
+  const moveA = validatedMove(
+    runtime,
+    state,
+    "player-a",
+    {
+      card_id: "player_a_move",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: 50
+    },
+    1100,
+    0
+  );
+  const moveB = validatedMove(
+    runtime,
+    state,
+    "player-b",
+    {
+      card_id: "player_b_move",
+      targetPileId: runtime.PileId.Pile2,
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: 50
+    },
+    2100,
+    1
+  );
+
+  assert.equal(moveA.effectiveResponseTimeMs, 1050);
+  assert.equal(moveA.networkRttEstimateMs, 50);
+  assert.equal(moveB.effectiveResponseTimeMs, 2050);
+  assert.equal(moveB.networkRttEstimateMs, 50);
+});
+
 test("a missing or malformed reaction time falls back to arrival order", () => {
   const state = createInitializedState(runtime);
-  state.lastBroadcastAtMs = 1000;
+  state.players["player-a"].lastStateSentAtMs = 1000;
   state.players["player-a"].hand = [
     card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1),
     card("player_a_other", runtime.CardColor.Red, runtime.CardShape.Circle, 3)
@@ -1140,11 +1391,28 @@ test("a missing or malformed reaction time falls back to arrival order", () => {
   );
   assert.equal(malformedReaction.effectiveResponseTimeMs, 1090);
   assert.equal(malformedReaction.networkRttEstimateMs, null);
+
+  state.players["player-a"].lastStateSentAtMs = undefined;
+  const legacyAnchor = validatedMove(
+    runtime,
+    state,
+    "player-a",
+    {
+      card_id: "player_a_other",
+      targetPileId: runtime.PileId.Pile1,
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: 75
+    },
+    1500,
+    2
+  );
+  assert.equal(legacyAnchor.effectiveResponseTimeMs, 1500);
+  assert.equal(legacyAnchor.networkRttEstimateMs, null);
 });
 
 test("reaction compensation only applies to moves responding to the current state version", () => {
   const state = createInitializedState(runtime);
-  state.lastBroadcastAtMs = 1000;
+  state.players["player-a"].lastStateSentAtMs = 1000;
   state.players["player-a"].hand = [
     card("player_a_move", runtime.CardColor.Red, runtime.CardShape.Star, 1)
   ];
@@ -1573,6 +1841,9 @@ test("deterministic full matches finish while preserving every card", () => {
 
 test("two rematch acceptances start exactly one fresh round", () => {
   const state = createInitializedState(runtime);
+  state.players["player-a"].rttEstimateMs = 220;
+  state.players["player-a"].rttSampleSequence = 4;
+  state.players["player-a"].lastStateSentAtMs = 1500;
   state.status = runtime.MatchStatus.Finished;
   state.winnerId = "player-a";
   state.endReason = runtime.MatchEndReason.Normal;
@@ -1607,6 +1878,9 @@ test("two rematch acceptances start exactly one fresh round", () => {
   assert.equal(state.winnerId, null);
   assert.equal(state.endedAtMs, null);
   assert.equal(state.pendingMoves.length, 0);
+  assert.equal(state.players["player-a"].rttEstimateMs, null);
+  assert.equal(state.players["player-a"].rttSampleSequence, 0);
+  assert.equal(state.players["player-a"].lastStateSentAtMs, null);
   assertCardConservation(state);
   assert.equal(runtime.initializeRematchRound(state, seededRandom(3), 8003), false);
 });
@@ -1736,6 +2010,8 @@ test("rematch decisions are rejected after a disconnect forfeit", () => {
 test("sprintMatchLoop broadcasts private state updates and targeted move rejections", () => {
   const state = createInitializedState(runtime);
   const player = state.players["player-a"];
+  player.lastStateSentAtMs = Date.now() - 100;
+  const previousPlayerAStateSentAtMs = player.lastStateSentAtMs;
   const playedCard = player.hand[0];
   state.centerPiles.pile_1 = [
     card("pile_top", playedCard.color, runtime.CardShape.Flag, 5)
@@ -1752,12 +2028,15 @@ test("sprintMatchLoop broadcasts private state updates and targeted move rejecti
     submitMoveMessage(runtime, "player-a", {
       card_id: playedCard.card_id,
       targetPileId: runtime.PileId.Pile1,
-      expectedStateVersion: state.stateVersion
+      expectedStateVersion: state.stateVersion,
+      reactionTimeMs: 20
     })
   ]);
 
   assert.equal(calls.length, 0);
   assert.equal(state.pendingMoves.length, 1);
+  assert.notEqual(player.rttEstimateMs, null);
+  assert.equal(player.rttSampleSequence, 1);
   state.pendingMoves[0].receivedAtMs -= runtime.moveFairnessWindowMs + 1;
 
   runtime.sprintMatchLoop(null, logger, null, dispatcher, 2, state, []);
@@ -1769,6 +2048,31 @@ test("sprintMatchLoop broadcasts private state updates and targeted move rejecti
   assert.equal(calls[0].presences.length, 1);
   assert.equal(calls[1].presences.length, 1);
   assert.notEqual(calls[0].data.myHand[0]?.card_id, undefined);
+  const playerAUpdate = calls.find(
+    (call) => call.presences[0].userId === "player-a"
+  );
+  const playerBUpdate = calls.find(
+    (call) => call.presences[0].userId === "player-b"
+  );
+  assert.equal(playerAUpdate.data.transitions.length, 1);
+  assert.equal(playerAUpdate.data.transitions[0].type, "card_played");
+  assert.equal(playerAUpdate.data.transitions[0].actor, "self");
+  assert.equal(playerAUpdate.data.transitions[0].card.card_id, playedCard.card_id);
+  assert.equal(playerAUpdate.data.myRttSampleSequence, 1);
+  assert.equal(playerBUpdate.data.myRttSampleSequence, 0);
+  assert.ok(
+    state.players["player-a"].lastStateSentAtMs > previousPlayerAStateSentAtMs
+  );
+  assert.equal(
+    state.players["player-a"].lastStateSentAtMs,
+    state.players["player-b"].lastStateSentAtMs
+  );
+  assert.equal(
+    playerAUpdate.data.transitions[0].targetPileId,
+    runtime.PileId.Pile1
+  );
+  assert.equal(playerBUpdate.data.transitions[0].actor, "opponent");
+  assert.equal("playerId" in playerBUpdate.data.transitions[0], false);
 
   const callCountAfterValidMove = calls.length;
   runtime.sprintMatchLoop(null, logger, null, dispatcher, 3, state, [
@@ -2694,6 +2998,17 @@ test("game-ended view is sent before statistics persist on the following tick", 
   ]);
   assert.equal(broadcasts[0].data.winnerName, "Alice");
   assert.equal(broadcasts[1].data.winnerName, "Alice");
+  const winnerView = broadcasts.find(
+    (call) => call.presences[0].userId === "player-a"
+  );
+  const loserView = broadcasts.find(
+    (call) => call.presences[0].userId === "player-b"
+  );
+  assert.equal(winnerView.data.transitions.length, 1);
+  assert.equal(winnerView.data.transitions[0].actor, "self");
+  assert.equal(winnerView.data.transitions[0].card.card_id, "last_card");
+  assert.equal(loserView.data.transitions.length, 1);
+  assert.equal(loserView.data.transitions[0].actor, "opponent");
   assert.equal(profileWrites, 0);
   assert.equal(state.resultPersistencePending, true);
 

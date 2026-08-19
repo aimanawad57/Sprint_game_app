@@ -10,7 +10,8 @@ function cloneCard(card: Card): Card {
 function buildPlayerStateView(
   state: SprintMatchState,
   viewerUserId: string,
-  serverNowMs: number = Date.now()
+  serverNowMs: number = Date.now(),
+  appliedTransitions: AppliedCardTransition[] = []
 ): PlayerStateView {
   const viewer = state.players[viewerUserId];
   if (!viewer) {
@@ -33,6 +34,16 @@ function buildPlayerStateView(
     stateVersion: state.stateVersion,
     status: state.status,
     elapsedTimeMs: calculateElapsedTimeMs(state, serverNowMs),
+    transitions: appliedTransitions.map((transition) => ({
+      type: transition.type,
+      actor: transition.playerId === viewerUserId ? "self" : "opponent",
+      card: cloneCard(transition.card),
+      targetPileId: transition.targetPileId
+    })),
+    myRttEstimateMs: normalizeRttEstimateMs(viewer.rttEstimateMs),
+    myRttSampleSequence: normalizeRttSampleSequence(
+      viewer.rttSampleSequence
+    ),
     myHand: viewer.hand.map(cloneCard),
     myDeckCount: viewer.deck.length,
     opponentHandCount: opponent.hand.length,
@@ -45,6 +56,20 @@ function buildPlayerStateView(
     winnerName: winner ? winner.displayName : null,
     endReason: state.endReason
   };
+}
+
+function normalizeRttEstimateMs(value: number | null): number | null {
+  if (value === null || !isFinite(value) || value < 0) {
+    return null;
+  }
+  return Math.floor(value);
+}
+
+function normalizeRttSampleSequence(value: number): number {
+  if (!isFinite(value) || value < 0) {
+    return 0;
+  }
+  return Math.floor(value);
 }
 
 function calculateElapsedTimeMs(

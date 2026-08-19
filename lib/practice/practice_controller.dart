@@ -3,27 +3,40 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../gameplay/game_rules.dart';
 import '../models/game/game_card.dart';
 import '../models/game/game_move.dart';
+import '../models/game/game_state_transition.dart';
 import '../models/game/game_state_view.dart';
-import 'local_game_rules.dart';
+import 'local_game_rules.dart'
+    show
+        drawReplacement,
+        handHasLegalMove,
+        playerHasWon,
+        shuffledCards,
+        sprintCardCatalog;
 
 enum PracticeEventType { cardPlayed, replacementDrawn, pilesReset, matchEnded }
 
 class PracticeEvent {
-  const PracticeEvent(this.type, this.message);
+  const PracticeEvent(this.type, this.message, {this.transition});
+
   final PracticeEventType type;
   final String message;
+  final GameStateTransition? transition;
 }
 
 class PracticeController extends ChangeNotifier {
-  PracticeController({Random? random}) : _random = random ?? Random() {
+  PracticeController({Random? random, Duration? botThinkDelay})
+    : _random = random ?? Random(),
+      _botThinkDelay = botThinkDelay {
     restart();
   }
 
   static const playerId = 'practice-player';
   static const botId = 'practice-bot';
   final Random _random;
+  final Duration? _botThinkDelay;
   final _events = StreamController<PracticeEvent>.broadcast();
   final _playerHand = <GameCard>[];
   final _playerDeck = <GameCard>[];
@@ -102,8 +115,9 @@ class PracticeController extends ChangeNotifier {
     final index = _playerHand.indexWhere((card) => card.cardId == cardId);
     if (index < 0) return false;
     final top = pileId == GamePileId.pile1 ? _pile1.last : _pile2.last;
-    if (!cardsMatch(_playerHand[index], top)) {
-      feedback = 'That card must match the color, shape, or count.';
+    final legality = evaluateCardPlay(_playerHand[index], top);
+    if (!legality.isLegal) {
+      feedback = legality.feedbackMessage;
       notifyListeners();
       return false;
     }
@@ -111,7 +125,16 @@ class PracticeController extends ChangeNotifier {
     final card = _playerHand.removeAt(index);
     (pileId == GamePileId.pile1 ? _pile1 : _pile2).add(card);
     _version++;
-    _emit(PracticeEventType.cardPlayed, 'Card played.');
+    _emit(
+      PracticeEventType.cardPlayed,
+      'Card played.',
+      transition: GameStateTransition(
+        type: GameStateTransitionType.cardPlayed,
+        actor: GameStateTransitionActor.self,
+        card: card,
+        targetPileId: pileId,
+      ),
+    );
     if (drawReplacement(_playerDeck, _playerHand) != null) {
       _emit(
         PracticeEventType.replacementDrawn,
@@ -136,7 +159,8 @@ class PracticeController extends ChangeNotifier {
     final spreadMs = 1001;
     botThinking = true;
     _botTimer = Timer(
-      Duration(milliseconds: minMs + _random.nextInt(spreadMs)),
+      _botThinkDelay ??
+          Duration(milliseconds: minMs + _random.nextInt(spreadMs)),
       _playBot,
     );
   }
@@ -164,7 +188,16 @@ class PracticeController extends ChangeNotifier {
     drawReplacement(_botDeck, _botHand);
     _version++;
     botThinking = false;
-    _emit(PracticeEventType.cardPlayed, 'The practice bot played a card.');
+    _emit(
+      PracticeEventType.cardPlayed,
+      'The practice bot played a card.',
+      transition: GameStateTransition(
+        type: GameStateTransitionType.cardPlayed,
+        actor: GameStateTransitionActor.opponent,
+        card: card,
+        targetPileId: move.$2,
+      ),
+    );
     if (playerHasWon(_botDeck, _botHand)) {
       _finish(botId);
     } else {
@@ -225,8 +258,14 @@ class PracticeController extends ChangeNotifier {
     );
   }
 
-  void _emit(PracticeEventType type, String message) {
-    if (!_events.isClosed) _events.add(PracticeEvent(type, message));
+  void _emit(
+    PracticeEventType type,
+    String message, {
+    GameStateTransition? transition,
+  }) {
+    if (!_events.isClosed) {
+      _events.add(PracticeEvent(type, message, transition: transition));
+    }
   }
 
   @override

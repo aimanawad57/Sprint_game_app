@@ -106,6 +106,9 @@ void main() {
           'connectedUserIds': ['player-a'],
           'connectedCount': 1,
           'expectedCount': 2,
+          'disconnectDeadlineMs': 130000,
+          'serverTimeMs': 100000,
+          'disconnectGraceMs': 30000,
         }),
       ),
     );
@@ -114,6 +117,30 @@ void main() {
     expect(connection.isUserConnected('player-a'), isTrue);
     expect(connection.isUserConnected('player-b'), isFalse);
     expect(connection.changes.single.userId, 'player-b');
+    expect(connection.disconnectDeadlineMs, 130000);
+    expect(connection.serverTimeMs, 100000);
+    expect(connection.disconnectGraceMs, 30000);
+  });
+
+  test('ignores malformed optional connection feedback fields', () {
+    final connection = decoder.decodeConnectionChanged(
+      utf8.encode(
+        jsonEncode({
+          'changes': <Object>[],
+          'connectedUserIds': ['player-a', 'player-b'],
+          'connectedCount': 2,
+          'expectedCount': 2,
+          'disconnectDeadlineMs': -1,
+          'serverTimeMs': 'later',
+          'disconnectGraceMs': false,
+        }),
+      ),
+    );
+
+    expect(connection.allPlayersConnected, isTrue);
+    expect(connection.disconnectDeadlineMs, isNull);
+    expect(connection.serverTimeMs, isNull);
+    expect(connection.disconnectGraceMs, isNull);
   });
 
   test('rejects inconsistent connection counts', () {

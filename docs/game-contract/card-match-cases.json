@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "same color only",
+      "playedCard": {"card_id": "played_color", "color": "red", "shape": "star", "count": 1},
+      "topCard": {"card_id": "top_color", "color": "red", "shape": "tree", "count": 2},
+      "matches": true
+    },
+    {
+      "name": "same shape only",
+      "playedCard": {"card_id": "played_shape", "color": "red", "shape": "diamond", "count": 1},
+      "topCard": {"card_id": "top_shape", "color": "blue", "shape": "diamond", "count": 2},
+      "matches": true
+    },
+    {
+      "name": "same count only",
+      "playedCard": {"card_id": "played_count", "color": "red", "shape": "star", "count": 4},
+      "topCard": {"card_id": "top_count", "color": "green", "shape": "house", "count": 4},
+      "matches": true
+    },
+    {
+      "name": "all attributes match",
+      "playedCard": {"card_id": "played_all", "color": "purple", "shape": "flag", "count": 5},
+      "topCard": {"card_id": "top_all", "color": "purple", "shape": "flag", "count": 5},
+      "matches": true
+    },
+    {
+      "name": "color and shape match",
+      "playedCard": {"card_id": "played_two", "color": "orange", "shape": "circle", "count": 1},
+      "topCard": {"card_id": "top_two", "color": "orange", "shape": "circle", "count": 3},
+      "matches": true
+    },
+    {
+      "name": "no attributes match",
+      "playedCard": {"card_id": "played_none", "color": "yellow", "shape": "tree", "count": 2},
+      "topCard": {"card_id": "top_none", "color": "blue", "shape": "star", "count": 5},
+      "matches": false
+    }
+  ]
+}

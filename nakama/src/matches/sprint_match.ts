@@ -11,6 +11,9 @@ const disconnectTimeoutMs = 30 * 1000;
 const moveFairnessWindowMs = 150;
 const minFairnessWindowMs = 100;
 const maxFairnessWindowMs = 300;
+// A conservative EMA keeps the degraded-connection indicator and fairness
+// window responsive without letting one noisy move replace the whole estimate.
+const rttEmaAlpha = 0.25;
 const waitingMatchTimeoutMs = 5 * 60 * 1000;
 const activeIdleTimeoutMs = 15 * 60 * 1000;
 const finishedEmptyGraceMs = 5 * 1000;
@@ -105,7 +108,9 @@ function createWaitingMatchState(
     deck: [],
     connected: false,
     disconnectedAtMs: null,
-    rttEstimateMs: null
+    rttEstimateMs: null,
+    rttSampleSequence: 0,
+    lastStateSentAtMs: null
   };
   players[playerBId] = {
     userId: playerBId,
@@ -114,7 +119,9 @@ function createWaitingMatchState(
     deck: [],
     connected: false,
     disconnectedAtMs: null,
-    rttEstimateMs: null
+    rttEstimateMs: null,
+    rttSampleSequence: 0,
+    lastStateSentAtMs: null
   };
 
   return {
@@ -144,7 +151,6 @@ function createWaitingMatchState(
     resultPersistencePending: false,
     resultPersisted: false,
     matchCode: null,
-    lastBroadcastAtMs: null,
     pendingMoves: [],
     nextPendingMoveSequence: 0,
     nextTieBreakerPlayerId: playerAId,
@@ -171,7 +177,9 @@ function createOpenWaitingMatchState(
     deck: [],
     connected: false,
     disconnectedAtMs: null,
-    rttEstimateMs: null
+    rttEstimateMs: null,
+    rttSampleSequence: 0,
+    lastStateSentAtMs: null
   };
 
   return {
@@ -200,7 +208,6 @@ function createOpenWaitingMatchState(
     resultPersistencePending: false,
     resultPersisted: false,
     matchCode: code,
-    lastBroadcastAtMs: null,
     pendingMoves: [],
     nextPendingMoveSequence: 0,
     nextTieBreakerPlayerId: creatorId,
@@ -310,24 +317,40 @@ function shouldTerminateSprintMatch(
 
 function buildConnectionChangedPayload(
   state: SprintMatchState,
-  changes: ConnectionChange[]
+  changes: ConnectionChange[],
+  serverNowMs: number = Date.now()
 ): ConnectionChangedPayload {
   const connectedUserIds = state.playerOrder.filter(
     (userId) => state.presences[userId] !== undefined
   );
+  const disconnectDeadlinesMs = state.status === MatchStatus.Active
+    ? state.playerOrder
+        .map((userId) => state.players[userId]?.disconnectedAtMs)
+        .filter((disconnectedAtMs): disconnectedAtMs is number =>
+          disconnectedAtMs !== null && disconnectedAtMs !== undefined
+        )
+        .map((disconnectedAtMs) => disconnectedAtMs + disconnectTimeoutMs)
+    : [];
 
   return {
     changes: changes,
     connectedUserIds: connectedUserIds,
     connectedCount: connectedUserIds.length,
-    expectedCount: state.playerOrder.length
+    expectedCount: state.playerOrder.length,
+    disconnectDeadlineMs:
+      disconnectDeadlinesMs.length > 0
+        ? Math.min.apply(null, disconnectDeadlinesMs)
+        : null,
+    disconnectGraceMs: disconnectTimeoutMs,
+    serverTimeMs: serverNowMs
   };
 }
 
 function broadcastConnectionChanged(
   dispatcher: nkruntime.MatchDispatcher,
   state: SprintMatchState,
-  changes: ConnectionChange[]
+  changes: ConnectionChange[],
+  serverNowMs: number = Date.now()
 ): void {
   if (changes.length === 0) {
     return;
@@ -335,7 +358,7 @@ function broadcastConnectionChanged(
 
   dispatcher.broadcastMessage(
     ServerOpcode.ConnectionChanged,
-    JSON.stringify(buildConnectionChangedPayload(state, changes))
+    JSON.stringify(buildConnectionChangedPayload(state, changes, serverNowMs))
   );
 }
 
@@ -514,6 +537,7 @@ function sendMatchStarted(
   dispatcher: nkruntime.MatchDispatcher,
   state: SprintMatchState
 ): void {
+  const serverNowMs = Date.now();
   state.playerOrder.forEach((userId) => {
     const presence = state.presences[userId];
     if (!presence) {
@@ -522,21 +546,20 @@ function sendMatchStarted(
 
     dispatcher.broadcastMessage(
       ServerOpcode.MatchStarted,
-      JSON.stringify(buildPlayerStateView(state, userId)),
+      JSON.stringify(buildPlayerStateView(state, userId, serverNowMs)),
       [presence]
     );
+    state.players[userId].lastStateSentAtMs = serverNowMs;
   });
-
-  // Anchors reaction-time fairness: a move's client-reported reaction time is
-  // measured from this broadcast (see resolveMoveTiming in apply_move.ts).
-  state.lastBroadcastAtMs = Date.now();
 }
 
 function sendPlayerStateViews(
   dispatcher: nkruntime.MatchDispatcher,
   state: SprintMatchState,
-  opcode: ServerOpcode
+  opcode: ServerOpcode,
+  transitions: AppliedCardTransition[] = []
 ): void {
+  const serverNowMs = Date.now();
   state.playerOrder.forEach((userId) => {
     const presence = state.presences[userId];
     if (!presence) {
@@ -545,12 +568,13 @@ function sendPlayerStateViews(
 
     dispatcher.broadcastMessage(
       opcode,
-      JSON.stringify(buildPlayerStateView(state, userId)),
+      JSON.stringify(
+        buildPlayerStateView(state, userId, serverNowMs, transitions)
+      ),
       [presence]
     );
+    state.players[userId].lastStateSentAtMs = serverNowMs;
   });
-
-  state.lastBroadcastAtMs = Date.now();
 }
 
 function sendMoveRejected(
@@ -612,7 +636,7 @@ function computeFairnessWindowMs(state: SprintMatchState): number {
   const estimates: number[] = [];
   state.playerOrder.forEach((userId) => {
     const rtt = state.players[userId]?.rttEstimateMs;
-    if (typeof rtt === "number") {
+    if (typeof rtt === "number" && isFinite(rtt) && rtt >= 0) {
       estimates.push(rtt);
     }
   });
@@ -665,11 +689,38 @@ function sendPlayerStateView(
   presence: nkruntime.Presence,
   opcode: ServerOpcode
 ): void {
+  const serverNowMs = Date.now();
   dispatcher.broadcastMessage(
     opcode,
-    JSON.stringify(buildPlayerStateView(state, userId)),
+    JSON.stringify(buildPlayerStateView(state, userId, serverNowMs)),
     [presence]
   );
+  state.players[userId].lastStateSentAtMs = serverNowMs;
+}
+
+function recordPlayerRttSample(
+  player: PlayerMatchState,
+  rawRttMs: number
+): void {
+  const sampleMs = Math.max(0, Math.floor(rawRttMs));
+  const previousEstimate =
+    typeof player.rttEstimateMs === "number" &&
+    isFinite(player.rttEstimateMs) &&
+    player.rttEstimateMs >= 0
+      ? player.rttEstimateMs
+      : null;
+  player.rttEstimateMs = previousEstimate === null
+    ? sampleMs
+    : Math.round(
+        previousEstimate * (1 - rttEmaAlpha) + sampleMs * rttEmaAlpha
+      );
+  const previousSequence =
+    typeof player.rttSampleSequence === "number" &&
+    isFinite(player.rttSampleSequence) &&
+    player.rttSampleSequence >= 0
+      ? Math.floor(player.rttSampleSequence)
+      : 0;
+  player.rttSampleSequence = previousSequence + 1;
 }
 
 function finishMatchByForfeit(
@@ -924,7 +975,9 @@ function sprintMatchJoin(
         deck: [],
         connected: false,
         disconnectedAtMs: null,
-        rttEstimateMs: null
+        rttEstimateMs: null,
+        rttSampleSequence: 0,
+        lastStateSentAtMs: null
       };
       state.rematchResponses[presence.userId] = "pending";
       logger.info("Sprint match code redeemed by user: %s", presence.userId);
@@ -961,7 +1014,7 @@ function sprintMatchJoin(
     }
   });
 
-  broadcastConnectionChanged(dispatcher, state, changes);
+  broadcastConnectionChanged(dispatcher, state, changes, nowMs);
 
   if (changes.length > 0) {
     logger.info(
@@ -1070,7 +1123,7 @@ function sprintMatchLeave(
     });
   });
 
-  broadcastConnectionChanged(dispatcher, state, changes);
+  broadcastConnectionChanged(dispatcher, state, changes, nowMs);
 
   if (state.status === MatchStatus.Finished && changes.length > 0) {
     state.rematchUnavailable = true;
@@ -1214,7 +1267,7 @@ function sprintMatchLoop(
     // fairness window is sized to the current connection quality.
     const movingPlayer = state.players[result.move.playerId];
     if (movingPlayer && result.move.networkRttEstimateMs !== null) {
-      movingPlayer.rttEstimateMs = result.move.networkRttEstimateMs;
+      recordPlayerRttSample(movingPlayer, result.move.networkRttEstimateMs);
     }
 
     logger.info(
@@ -1279,7 +1332,8 @@ function sprintMatchLoop(
       sendPlayerStateViews(
         dispatcher,
         state,
-        batchResult.gameEnded ? ServerOpcode.GameEnded : ServerOpcode.StateUpdate
+        batchResult.gameEnded ? ServerOpcode.GameEnded : ServerOpcode.StateUpdate,
+        batchResult.transitions
       );
     }
 

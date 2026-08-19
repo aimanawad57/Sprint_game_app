@@ -45,6 +45,9 @@ class GameConnectionView {
     required List<String> connectedUserIds,
     required this.connectedCount,
     required this.expectedCount,
+    this.disconnectDeadlineMs,
+    this.serverTimeMs,
+    this.disconnectGraceMs,
   }) : changes = List.unmodifiable(changes),
        connectedUserIds = List.unmodifiable(connectedUserIds);
 
@@ -52,6 +55,9 @@ class GameConnectionView {
   final List<String> connectedUserIds;
   final int connectedCount;
   final int expectedCount;
+  final int? disconnectDeadlineMs;
+  final int? serverTimeMs;
+  final int? disconnectGraceMs;
 
   bool get allPlayersConnected => connectedCount == expectedCount;
 
@@ -101,11 +107,20 @@ class GameConnectionView {
       );
     }
 
+    int? optionalFeedbackInt(String name) {
+      final value = json[name];
+      if (value == null) return null;
+      return value is int && value >= 0 ? value : null;
+    }
+
     return GameConnectionView(
       changes: changes,
       connectedUserIds: connectedUserIds,
       connectedCount: connectedCount,
       expectedCount: expectedCount,
+      disconnectDeadlineMs: optionalFeedbackInt('disconnectDeadlineMs'),
+      serverTimeMs: optionalFeedbackInt('serverTimeMs'),
+      disconnectGraceMs: optionalFeedbackInt('disconnectGraceMs'),
     );
   }
 }
