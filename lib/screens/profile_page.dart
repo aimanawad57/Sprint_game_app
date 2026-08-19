@@ -61,6 +61,8 @@ class ProfilePage extends StatelessWidget {
           children: [
             _StatsCard(profile: loadedProfile),
             const SizedBox(height: 16),
+            _StreakCard(profile: loadedProfile),
+            const SizedBox(height: 16),
             _DetailsCard(joinedDate: _formatDate(loadedProfile.createdAt)),
           ],
         );
@@ -134,13 +136,208 @@ class _StatsCard extends StatelessWidget {
         : formatElapsedTimeMs(profile.bestTimeMs!);
 
     return _ProfileCard(
-      title: 'Stats',
+      title: 'Performance',
       children: [
-        _ProfileInfoRow(label: 'Games played', value: '${profile.gamesPlayed}'),
-        _ProfileInfoRow(label: 'Wins', value: '${profile.wins}'),
-        _ProfileInfoRow(label: 'Losses', value: '${profile.losses}'),
-        _ProfileInfoRow(label: 'Best time', value: bestTime),
+        _WinRateSummary(winRate: profile.winRate),
+        const SizedBox(height: 16),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final width = (constraints.maxWidth - 10) / 2;
+            return Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _ProfileMetric(
+                  width: width,
+                  icon: Icons.sports_esports_rounded,
+                  label: 'Games',
+                  value: '${profile.gamesPlayed}',
+                ),
+                _ProfileMetric(
+                  width: width,
+                  icon: Icons.emoji_events_rounded,
+                  label: 'Wins',
+                  value: '${profile.wins}',
+                ),
+                _ProfileMetric(
+                  width: width,
+                  icon: Icons.close_rounded,
+                  label: 'Losses',
+                  value: '${profile.losses}',
+                ),
+                _ProfileMetric(
+                  width: width,
+                  icon: Icons.timer_outlined,
+                  label: 'Best time',
+                  value: bestTime,
+                ),
+              ],
+            );
+          },
+        ),
       ],
+    );
+  }
+}
+
+class _WinRateSummary extends StatelessWidget {
+  const _WinRateSummary({required this.winRate});
+
+  final double winRate;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.primaryContainer,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.donut_large_rounded,
+            color: colors.onPrimaryContainer,
+            size: 36,
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              'Win rate',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: colors.onPrimaryContainer,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          Text(
+            '${winRate.toStringAsFixed(1)}%',
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+              color: colors.onPrimaryContainer,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfileMetric extends StatelessWidget {
+  const _ProfileMetric({
+    required this.width,
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final double width;
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      width: width,
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: colors.primary),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+          ),
+          Text(label, style: TextStyle(color: colors.onSurfaceVariant)),
+        ],
+      ),
+    );
+  }
+}
+
+class _StreakCard extends StatelessWidget {
+  const _StreakCard({required this.profile});
+
+  final PlayerProfile profile;
+
+  @override
+  Widget build(BuildContext context) {
+    return _ProfileCard(
+      title: 'Win streaks',
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _StreakMetric(
+                icon: Icons.local_fire_department_rounded,
+                label: 'Current streak',
+                value: profile.currentWinStreak,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StreakMetric(
+                icon: Icons.workspace_premium_rounded,
+                label: 'Best streak',
+                value: profile.bestWinStreak,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _StreakMetric extends StatelessWidget {
+  const _StreakMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final int value;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: colors.tertiary, size: 28),
+          const SizedBox(height: 6),
+          Text(
+            '$value',
+            style: Theme.of(
+              context,
+            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
+          ),
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: colors.onSurfaceVariant),
+          ),
+        ],
+      ),
     );
   }
 }

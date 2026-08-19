@@ -8,6 +8,7 @@ type SprintLeaderboardEntry = {
   wins: number;
   gamesPlayed: number;
   losses: number;
+  currentWinStreak: number;
   bestTimeMs: number | null;
 };
 
@@ -48,6 +49,8 @@ function writeSprintWinsLeaderboardRecord(
     {
       gamesPlayed: profile.gamesPlayed,
       losses: profile.losses,
+      currentWinStreak: profile.currentWinStreak,
+      bestWinStreak: profile.bestWinStreak,
       bestTimeMs: profile.bestTimeMs
     },
     nkruntime.OverrideOperator.SET
@@ -102,6 +105,7 @@ function buildLeaderboardEntry(
     wins: record.score,
     gamesPlayed: metadataInt(metadata, "gamesPlayed"),
     losses: metadataInt(metadata, "losses"),
+    currentWinStreak: metadataInt(metadata, "currentWinStreak"),
     bestTimeMs: metadataNullableInt(metadata, "bestTimeMs")
   };
 }

@@ -10,6 +10,7 @@ void main() {
       'wins': 7,
       'gamesPlayed': 10,
       'losses': 3,
+      'currentWinStreak': 4,
       'bestTimeMs': 4200,
     });
 
@@ -19,6 +20,8 @@ void main() {
     expect(entry.wins, 7);
     expect(entry.gamesPlayed, 10);
     expect(entry.losses, 3);
+    expect(entry.currentWinStreak, 4);
+    expect(entry.winRate, 70);
     expect(entry.bestTimeMs, 4200);
   });
 
@@ -31,6 +34,8 @@ void main() {
     expect(entry.wins, 0);
     expect(entry.gamesPlayed, 0);
     expect(entry.losses, 0);
+    expect(entry.currentWinStreak, 0);
+    expect(entry.winRate, 0);
     expect(entry.bestTimeMs, isNull);
   });
 }

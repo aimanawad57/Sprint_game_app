@@ -385,12 +385,16 @@ JSON. Clients do not write profile storage directly.
 
 When a player empties both their hand and private deck, Nakama sends opcode
 `14` before scheduling profile persistence for the following match tick. Both
-profiles increment `gamesPlayed`; the winner increments `wins`, the loser
-increments `losses`, and the winner's `bestTimeMs` becomes the lower of its
-existing value and the authoritative match duration.
+profiles increment `gamesPlayed`; the winner increments `wins` and
+`currentWinStreak`, while the loser increments `losses` and resets
+`currentWinStreak` to zero. `bestWinStreak` preserves the highest completed
+streak. The winner's `bestTimeMs` becomes the lower of its existing value and
+the authoritative match duration.
 
-Forfeit results also update `gamesPlayed`, `wins`, and `losses`, but do not
-update `bestTimeMs`. Abandoned results do not update profile statistics.
+Forfeit results also update wins, losses, and win streaks, but do not update
+`bestTimeMs`. Abandoned results do not update profile statistics. The wins
+leaderboard score is total wins only; win rate, current streak, and best time
+are display metadata and do not affect rank.
 
 Both profile updates use one atomic Nakama storage operation. Match-state
 guards prevent the same result from being applied twice, and a failed write

@@ -3,6 +3,7 @@ import 'package:nakama/nakama.dart' as nakama;
 
 import '../models/leaderboard_entry.dart';
 import '../services/nakama_service.dart';
+import '../utils/elapsed_time_format.dart';
 
 class LeaderboardPage extends StatefulWidget {
   const LeaderboardPage({
@@ -41,7 +42,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Leaderboard'),
+        title: const Text('Wins leaderboard'),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -79,14 +80,46 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
 
             return ListView.separated(
               padding: const EdgeInsets.all(16),
-              itemCount: entries.length,
+              itemCount: entries.length + 1,
               separatorBuilder: (context, index) => const SizedBox(height: 10),
               itemBuilder: (context, index) {
-                return _LeaderboardEntryTile(entry: entries[index]);
+                if (index == 0) return const _RankingExplanation();
+                return _LeaderboardEntryTile(entry: entries[index - 1]);
               },
             );
           },
         ),
+      ),
+    );
+  }
+}
+
+class _RankingExplanation extends StatelessWidget {
+  const _RankingExplanation();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+      decoration: BoxDecoration(
+        color: colors.primaryContainer,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.emoji_events_rounded, color: colors.onPrimaryContainer),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Ranked by total wins',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: colors.onPrimaryContainer,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -100,7 +133,18 @@ class _LeaderboardEntryTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final bestTime = entry.bestTimeMs == null ? '-' : '${entry.bestTimeMs} ms';
+    final bestTime = entry.bestTimeMs == null
+        ? '-'
+        : formatElapsedTimeMs(entry.bestTimeMs!);
+    final rankColor = switch (entry.rank) {
+      1 => const Color(0xFFFFC107),
+      2 => const Color(0xFFB0BEC5),
+      3 => const Color(0xFFCD7F32),
+      _ => colorScheme.primaryContainer,
+    };
+    final rankForeground = entry.rank <= 3 && entry.rank > 0
+        ? const Color(0xFF241A00)
+        : colorScheme.onPrimaryContainer;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -113,8 +157,8 @@ class _LeaderboardEntryTile extends StatelessWidget {
           children: [
             CircleAvatar(
               radius: 22,
-              backgroundColor: colorScheme.primaryContainer,
-              foregroundColor: colorScheme.onPrimaryContainer,
+              backgroundColor: rankColor,
+              foregroundColor: rankForeground,
               child: Text(
                 '#${entry.rank}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
@@ -138,10 +182,13 @@ class _LeaderboardEntryTile extends StatelessWidget {
                     children: [
                       _EntryStat(label: 'Wins', value: '${entry.wins}'),
                       _EntryStat(
-                        label: 'Games',
-                        value: '${entry.gamesPlayed}',
+                        label: 'Win rate',
+                        value: '${entry.winRate.toStringAsFixed(1)}%',
                       ),
-                      _EntryStat(label: 'Losses', value: '${entry.losses}'),
+                      _EntryStat(
+                        label: 'Streak',
+                        value: '${entry.currentWinStreak}',
+                      ),
                       _EntryStat(label: 'Best', value: bestTime),
                     ],
                   ),

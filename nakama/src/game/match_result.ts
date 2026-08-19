@@ -5,6 +5,8 @@ type StoredPlayerProfile = {
   gamesPlayed: number;
   wins: number;
   losses: number;
+  currentWinStreak: number;
+  bestWinStreak: number;
   bestTimeMs: number | null;
   createdAt: string;
 };
@@ -21,10 +23,16 @@ function readStoredProfile(
 ): StoredPlayerProfile {
   const value = object?.value || {};
   const bestTimeValue = value.bestTimeMs;
+  const currentWinStreak = nonNegativeProfileInt(value.currentWinStreak);
   return {
     gamesPlayed: nonNegativeProfileInt(value.gamesPlayed),
     wins: nonNegativeProfileInt(value.wins),
     losses: nonNegativeProfileInt(value.losses),
+    currentWinStreak: currentWinStreak,
+    bestWinStreak: Math.max(
+      currentWinStreak,
+      nonNegativeProfileInt(value.bestWinStreak)
+    ),
     bestTimeMs:
       typeof bestTimeValue === "number" &&
       Number.isFinite(bestTimeValue) &&
@@ -102,6 +110,11 @@ function persistPendingMatchResult(
   const loserProfile = readStoredProfile(loserExisting, state.endedAtMs);
   winnerProfile.gamesPlayed += 1;
   winnerProfile.wins += 1;
+  winnerProfile.currentWinStreak += 1;
+  winnerProfile.bestWinStreak = Math.max(
+    winnerProfile.bestWinStreak,
+    winnerProfile.currentWinStreak
+  );
   if (state.endReason !== MatchEndReason.Forfeit) {
     winnerProfile.bestTimeMs =
       winnerProfile.bestTimeMs === null
@@ -110,6 +123,7 @@ function persistPendingMatchResult(
   }
   loserProfile.gamesPlayed += 1;
   loserProfile.losses += 1;
+  loserProfile.currentWinStreak = 0;
 
   nk.multiUpdate(
     null,
@@ -121,18 +135,30 @@ function persistPendingMatchResult(
     null
   );
 
-  try {
-    writeSprintWinsLeaderboardRecord(
-      nk,
-      winnerId,
-      state.players[winnerId].displayName || "Player",
-      winnerProfile
-    );
-  } catch (error) {
-    // The profile is the source of truth. If the leaderboard write fails,
-    // do not retry the whole result persistence because that could count the
-    // same match twice in player stats.
-  }
+  [
+    {
+      userId: winnerId,
+      displayName: state.players[winnerId].displayName || "Player",
+      profile: winnerProfile
+    },
+    {
+      userId: loserId,
+      displayName: state.players[loserId].displayName || "Player",
+      profile: loserProfile
+    }
+  ].forEach((record) => {
+    try {
+      writeSprintWinsLeaderboardRecord(
+        nk,
+        record.userId,
+        record.displayName,
+        record.profile
+      );
+    } catch (error) {
+      // The profile is the source of truth. A failed leaderboard projection
+      // must not block the other player or recount the completed match.
+    }
+  });
 
   state.resultPersisted = true;
   state.resultPersistencePending = false;

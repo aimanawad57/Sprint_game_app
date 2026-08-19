@@ -2602,6 +2602,8 @@ test("profile persistence atomically updates winner, loser, and best time once",
     gamesPlayed: 3,
     wins: 2,
     losses: 1,
+    currentWinStreak: 1,
+    bestWinStreak: 1,
     bestTimeMs: 5000,
     createdAt: "2026-01-01T00:00:00.000Z"
   });
@@ -2609,6 +2611,8 @@ test("profile persistence atomically updates winner, loser, and best time once",
     gamesPlayed: 5,
     wins: 3,
     losses: 2,
+    currentWinStreak: 0,
+    bestWinStreak: 0,
     bestTimeMs: null,
     createdAt: "2026-01-02T00:00:00.000Z"
   });
@@ -2630,7 +2634,24 @@ test("profile persistence atomically updates winner, loser, and best time once",
       metadata: {
         gamesPlayed: 3,
         losses: 1,
+        currentWinStreak: 1,
+        bestWinStreak: 1,
         bestTimeMs: 5000
+      },
+      operator: "set"
+    },
+    {
+      leaderboardID: "sprint_wins",
+      ownerID: "player-b",
+      username: "Bob",
+      score: 3,
+      subscore: 0,
+      metadata: {
+        gamesPlayed: 5,
+        losses: 2,
+        currentWinStreak: 0,
+        bestWinStreak: 0,
+        bestTimeMs: null
       },
       operator: "set"
     }
@@ -2651,6 +2672,8 @@ test("profile persistence creates missing profiles and preserves a faster best t
           gamesPlayed: 8,
           wins: 5,
           losses: 3,
+          currentWinStreak: 3,
+          bestWinStreak: 5,
           bestTimeMs: 3000,
           createdAt: "created"
         })
@@ -2667,8 +2690,11 @@ test("profile persistence creates missing profiles and preserves a faster best t
   const winnerWrite = writes.find((write) => write.userId === "player-a");
   const loserWrite = writes.find((write) => write.userId === "player-b");
   assert.equal(winnerWrite.value.bestTimeMs, 3000);
+  assert.equal(winnerWrite.value.currentWinStreak, 4);
+  assert.equal(winnerWrite.value.bestWinStreak, 5);
   assert.equal(loserWrite.value.gamesPlayed, 1);
   assert.equal(loserWrite.value.losses, 1);
+  assert.equal(loserWrite.value.currentWinStreak, 0);
   assert.equal(loserWrite.version, undefined);
   assert.equal(loserWrite.permissionRead, 1);
   assert.equal(loserWrite.permissionWrite, 0);
@@ -2685,6 +2711,8 @@ test("forfeit persistence updates win and loss without changing best time", () =
           gamesPlayed: 2,
           wins: 1,
           losses: 1,
+          currentWinStreak: 2,
+          bestWinStreak: 6,
           bestTimeMs: 7000,
           createdAt: "created-a"
         }),
@@ -2692,6 +2720,8 @@ test("forfeit persistence updates win and loss without changing best time", () =
           gamesPlayed: 3,
           wins: 2,
           losses: 1,
+          currentWinStreak: 4,
+          bestWinStreak: 4,
           bestTimeMs: 4000,
           createdAt: "created-b"
         })
@@ -2709,9 +2739,13 @@ test("forfeit persistence updates win and loss without changing best time", () =
   const loserWrite = writes.find((write) => write.userId === "player-b");
   assert.equal(winnerWrite.value.gamesPlayed, 3);
   assert.equal(winnerWrite.value.wins, 2);
+  assert.equal(winnerWrite.value.currentWinStreak, 3);
+  assert.equal(winnerWrite.value.bestWinStreak, 6);
   assert.equal(winnerWrite.value.bestTimeMs, 7000);
   assert.equal(loserWrite.value.gamesPlayed, 4);
   assert.equal(loserWrite.value.losses, 2);
+  assert.equal(loserWrite.value.currentWinStreak, 0);
+  assert.equal(loserWrite.value.bestWinStreak, 4);
   assert.equal(loserWrite.value.bestTimeMs, 4000);
 });
 
@@ -2737,6 +2771,7 @@ test("failed profile persistence remains pending for a later tick", () => {
 test("leaderboard write failure does not retry profile persistence", () => {
   const state = finishedStateForStatistics(runtime);
   let profileWrites = 0;
+  let leaderboardWriteAttempts = 0;
   const nk = {
     storageRead() {
       return [];
@@ -2746,6 +2781,7 @@ test("leaderboard write failure does not retry profile persistence", () => {
       return {storageWriteAcks: [], walletUpdateAcks: []};
     },
     leaderboardRecordWrite() {
+      leaderboardWriteAttempts += 1;
       throw new Error("temporary leaderboard failure");
     }
   };
@@ -2754,6 +2790,7 @@ test("leaderboard write failure does not retry profile persistence", () => {
   assert.equal(profileWrites, 1);
   assert.equal(state.resultPersistencePending, false);
   assert.equal(state.resultPersisted, true);
+  assert.equal(leaderboardWriteAttempts, 2);
   assert.equal(runtime.persistPendingMatchResult(state, nk), false);
   assert.equal(profileWrites, 1);
 });
@@ -2829,6 +2866,8 @@ test("wins leaderboard RPC returns UI-safe entries", () => {
             metadata: {
               gamesPlayed: 9,
               losses: 2,
+              currentWinStreak: 3,
+              bestWinStreak: 5,
               bestTimeMs: 4200
             },
             createTime: 1,
@@ -2856,6 +2895,7 @@ test("wins leaderboard RPC returns UI-safe entries", () => {
       wins: 7,
       gamesPlayed: 9,
       losses: 2,
+      currentWinStreak: 3,
       bestTimeMs: 4200
     }
   ]);
@@ -2873,6 +2913,8 @@ test("get_or_create_profile returns an existing owner profile", () => {
     gamesPlayed: 7,
     wins: 4,
     losses: 3,
+    currentWinStreak: 2,
+    bestWinStreak: 3,
     bestTimeMs: 2500,
     createdAt: "2026-01-01T00:00:00.000Z"
   };
@@ -2929,6 +2971,8 @@ test("get_or_create_profile creates a server-owned default profile when missing"
     gamesPlayed: 0,
     wins: 0,
     losses: 0,
+    currentWinStreak: 0,
+    bestWinStreak: 0,
     bestTimeMs: null,
     createdAt: profile.createdAt
   });

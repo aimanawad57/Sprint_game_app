@@ -3,6 +3,8 @@ function defaultPlayerProfile(nowMs: number = Date.now()): StoredPlayerProfile {
     gamesPlayed: 0,
     wins: 0,
     losses: 0,
+    currentWinStreak: 0,
+    bestWinStreak: 0,
     bestTimeMs: null,
     createdAt: new Date(nowMs).toISOString()
   };
@@ -28,7 +30,7 @@ function rpcGetOrCreateProfile(
   ]);
   const existing = objects[0];
   if (existing) {
-    return JSON.stringify(existing.value);
+    return JSON.stringify(readStoredProfile(existing, Date.now()));
   }
 
   const profile = defaultPlayerProfile();
