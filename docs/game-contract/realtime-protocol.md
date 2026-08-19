@@ -335,6 +335,23 @@ Presence-only changes do not increment `stateVersion`. Connecting or
 disconnecting does not move cards and must not make a submitted gameplay move
 stale. Initial card dealing will still establish gameplay version `1`.
 
+## Crash-safe match resumption
+
+Each waiting or active match publishes a server-owned recovery pointer for
+every assigned player. Authenticated RPC `get_resumable_match` reads only the
+caller's pointer, verifies that the referenced authoritative match still
+exists, and signals the match to confirm that the caller is assigned and that
+the match has not finished. Invalid or stale pointers are removed and the RPC
+returns `{ "matchId": null }`.
+
+Flutter also stores the joined match ID locally under a per-user key as soon as
+joining succeeds. At startup it reconciles that local hint with the RPC: the
+live server match wins, an authoritative empty result clears stale local data,
+and an unavailable server falls back to the local hint. Authoritative game end
+and explicit abandonment clear both projections. Conditional server cleanup
+checks the stored match ID before deletion so an older match cannot erase a
+newer recovery pointer.
+
 ## Disconnect timeout and abandonment
 
 When a player leaves an active match, Nakama records the disconnect time and

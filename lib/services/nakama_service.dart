@@ -202,6 +202,25 @@ class NakamaService {
     return PlayerProfile.fromJson(json);
   }
 
+  Future<String?> loadResumableMatch(nakama.Session session) async {
+    final response = await client.rpc(
+      session: session,
+      id: 'get_resumable_match',
+      payload: '',
+    );
+    if (response == null) {
+      throw Exception('The server did not return resumable-match data.');
+    }
+
+    final json = jsonDecode(response) as Map<String, dynamic>;
+    final matchId = json['matchId'];
+    if (matchId == null) return null;
+    if (matchId is! String || matchId.trim().isEmpty) {
+      throw const FormatException('Invalid resumable match id.');
+    }
+    return matchId.trim();
+  }
+
   Future<OnboardingProgress> loadOnboardingProgress(
     nakama.Session session,
   ) async {

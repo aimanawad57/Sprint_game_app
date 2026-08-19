@@ -6,6 +6,7 @@ import '../models/player_profile.dart';
 import '../models/play_exit_action.dart';
 import '../services/nakama_service.dart';
 import '../services/onboarding_progress_repository.dart';
+import '../services/resumable_match_repository.dart';
 import '../widgets/backend_status_panel.dart';
 import '../widgets/disconnected_match_banner.dart';
 import 'create_join_match_screen.dart';
@@ -39,8 +40,10 @@ class _MainPageState extends State<MainPage> {
   ProfileStatus _profileStatus = ProfileStatus.loading;
   PlayerProfile? _playerProfile;
   String? _resumableMatchId;
+  bool _isCheckingResumableMatch = true;
   bool _isAbandoningMatch = false;
   late final OnboardingProgressRepository _onboardingRepository;
+  late final ResumableMatchRepository _resumableMatchRepository;
 
   @override
   void initState() {
@@ -49,8 +52,28 @@ class _MainPageState extends State<MainPage> {
       nakamaService: widget.nakamaService,
       session: widget.nakamaSession,
     );
+    _resumableMatchRepository = ResumableMatchRepository(
+      nakamaService: widget.nakamaService,
+      session: widget.nakamaSession,
+    );
     _checkBackend();
     _loadOrCreatePlayerProfile();
+    _restoreResumableMatch();
+  }
+
+  Future<void> _restoreResumableMatch() async {
+    try {
+      final matchId = await _resumableMatchRepository.restore();
+      if (!mounted) return;
+      setState(() {
+        _resumableMatchId = matchId;
+        _isCheckingResumableMatch = false;
+      });
+    } catch (error) {
+      debugPrint('Resumable match lookup failed: $error');
+      if (!mounted) return;
+      setState(() => _isCheckingResumableMatch = false);
+    }
   }
 
   Future<void> _checkBackend() async {
@@ -104,7 +127,7 @@ class _MainPageState extends State<MainPage> {
     );
 
     if (!mounted) return;
-    _handlePlayExitResult(result);
+    await _handlePlayExitResult(result);
     if (!mounted) return;
     setState(() {
       _profileStatus = ProfileStatus.loading;
@@ -134,7 +157,8 @@ class _MainPageState extends State<MainPage> {
     );
 
     if (!mounted) return;
-    _handlePlayExitResult(result);
+    await _handlePlayExitResult(result);
+    if (!mounted) return;
     setState(() {
       _profileStatus = ProfileStatus.loading;
     });
@@ -159,6 +183,7 @@ class _MainPageState extends State<MainPage> {
         session: widget.nakamaSession,
         matchId: matchId,
       );
+      await _resumableMatchRepository.clear();
 
       if (!mounted) return;
       setState(() {
@@ -186,16 +211,23 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  void _handlePlayExitResult(PlayExitResult? result) {
+  Future<void> _handlePlayExitResult(PlayExitResult? result) async {
     if (result?.action == PlayExitAction.disconnectedFromMatch) {
+      final matchId = result?.matchId;
+      if (matchId != null) {
+        await _resumableMatchRepository.save(matchId);
+      }
+      if (!mounted) return;
       setState(() {
-        _resumableMatchId = result?.matchId;
+        _resumableMatchId = matchId;
       });
       return;
     }
 
     if (result?.action == PlayExitAction.viewProfile ||
         result?.action == PlayExitAction.matchFinished) {
+      await _resumableMatchRepository.clear();
+      if (!mounted) return;
       setState(() {
         _resumableMatchId = null;
       });
@@ -310,9 +342,21 @@ class _MainPageState extends State<MainPage> {
                 const SizedBox(height: 20),
               ],
               FilledButton.icon(
-                onPressed: _openPlayPage,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Play'),
+                onPressed:
+                    !_isCheckingResumableMatch && _resumableMatchId == null
+                    ? _openPlayPage
+                    : null,
+                icon: _isCheckingResumableMatch
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.play_arrow),
+                label: Text(
+                  _isCheckingResumableMatch
+                      ? 'Checking for active match...'
+                      : 'Play',
+                ),
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(

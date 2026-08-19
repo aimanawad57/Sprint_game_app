@@ -8,6 +8,7 @@ import 'package:sprint_app/services/game_feedback_audio.dart';
 import 'package:sprint_app/services/game_feedback_preferences_store.dart';
 import 'package:sprint_app/services/game_feedback_service.dart';
 import 'package:sprint_app/services/nakama_service.dart';
+import 'package:sprint_app/services/resumable_match_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -67,9 +68,31 @@ void main() {
     expect(controller.phase, GameSessionPhase.active);
     expect(controller.gameState?.stateVersion, 5);
   });
+
+  test('authoritative finish clears the persisted resumable match', () async {
+    final feedback = _feedbackService();
+    final store = _ResumableStore();
+    final controller = _controller(feedback, resumableMatchStore: store);
+    addTearDown(feedback.dispose);
+    addTearDown(controller.dispose);
+
+    controller.applyAuthoritativeStateForTesting(
+      _state(
+        version: 1,
+        status: GameMatchStatus.finished,
+        endReason: GameMatchEndReason.normal,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.clearCount, 1);
+  });
 }
 
-GameSessionController _controller(GameFeedbackService feedback) {
+GameSessionController _controller(
+  GameFeedbackService feedback, {
+  ResumableMatchStore? resumableMatchStore,
+}) {
   return GameSessionController(
     nakamaService: NakamaService(),
     session: nakama.Session(
@@ -82,7 +105,21 @@ GameSessionController _controller(GameFeedbackService feedback) {
       refreshExpiresAt: DateTime.utc(2100),
     ),
     feedbackService: feedback,
+    resumableMatchStore: resumableMatchStore ?? _ResumableStore(),
   );
+}
+
+class _ResumableStore implements ResumableMatchStore {
+  int clearCount = 0;
+
+  @override
+  Future<void> clear() async => clearCount += 1;
+
+  @override
+  Future<String?> read() async => null;
+
+  @override
+  Future<void> save(String matchId) async {}
 }
 
 GameStateView _state({

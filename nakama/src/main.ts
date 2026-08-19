@@ -12,6 +12,7 @@ function InitModule(
   initializer.registerRpc("get_onboarding_progress", rpcGetOnboardingProgress);
   initializer.registerRpc("merge_onboarding_progress", rpcMergeOnboardingProgress);
   initializer.registerRpc("get_wins_leaderboard", rpcGetWinsLeaderboard);
+  initializer.registerRpc("get_resumable_match", rpcGetResumableMatch);
   initializer.registerRpc("create_match_by_code", rpcCreateMatchByCode);
   initializer.registerRpc("join_match_by_code", rpcJoinMatchByCode);
   initializer.registerMatchmakerMatched(matchmakerMatched);

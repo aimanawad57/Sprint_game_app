@@ -15,6 +15,7 @@ import '../services/game_feedback_service.dart';
 import '../services/game_message_decoder.dart';
 import '../services/match_reconnect_coordinator.dart';
 import '../services/nakama_service.dart';
+import '../services/resumable_match_store.dart';
 
 enum GameSessionPhase {
   idle,
@@ -40,7 +41,11 @@ class GameSessionController extends ChangeNotifier {
     required this.feedbackService,
     this.directMatchId,
     this.displayCode,
+    ResumableMatchStore? resumableMatchStore,
   }) {
+    _resumableMatchStore =
+        resumableMatchStore ??
+        SharedPreferencesResumableMatchStore(userId: session.userId);
     _reconnectCoordinator = MatchReconnectCoordinator(
       attempt: _attemptMatchRecovery,
       cancelAttempt: _cancelMatchRecoveryAttempt,
@@ -50,6 +55,7 @@ class GameSessionController extends ChangeNotifier {
   final NakamaService nakamaService;
   final nakama.Session session;
   final GameFeedbackService feedbackService;
+  late final ResumableMatchStore _resumableMatchStore;
 
   /// When set, the page joins this match directly instead of using the
   /// quickplay matchmaker. Used by the create/join-by-code flow.
@@ -98,6 +104,9 @@ class GameSessionController extends ChangeNotifier {
   bool _isDisposing = false;
   bool _started = false;
   bool _matchmakerMatchHandled = false;
+  Future<void> _resumableStoreOperation = Future<void>.value();
+  String? _scheduledResumableMatchId;
+  bool _hasScheduledResumableValue = false;
 
   /// Monotonic instant when the most recent authoritative state was applied.
   /// Anchors the reaction-time measurement sent with the next move without
@@ -306,6 +315,7 @@ class GameSessionController extends ChangeNotifier {
           _phase = GameSessionPhase.waiting;
         }
       });
+      _saveResumableMatch(match.matchId);
     } catch (error) {
       if (!_isJoinCurrent(joinGeneration)) return;
       _joiningMatchId = null;
@@ -357,6 +367,7 @@ class GameSessionController extends ChangeNotifier {
           _phase = GameSessionPhase.waiting;
         }
       });
+      _saveResumableMatch(match.matchId);
     } catch (error) {
       if (!_isJoinCurrent(joinGeneration)) return;
       _reconnectJoinSucceededAtMs = null;
@@ -426,6 +437,7 @@ class GameSessionController extends ChangeNotifier {
           _phase = GameSessionPhase.waiting;
         }
       });
+      _saveResumableMatch(match.matchId);
     } catch (error) {
       if (_isDisposing ||
           !mounted ||
@@ -651,6 +663,41 @@ class GameSessionController extends ChangeNotifier {
         _connectionFeedbackTracker.markActiveSnapshot(connected: true);
       }
     });
+
+    final currentMatchId = _matchId ?? _joiningMatchId;
+    if (gameState.status == GameMatchStatus.finished) {
+      _clearResumableMatch();
+    } else if (currentMatchId != null) {
+      _saveResumableMatch(currentMatchId);
+    }
+  }
+
+  void _saveResumableMatch(String matchId) {
+    if (_hasScheduledResumableValue && _scheduledResumableMatchId == matchId) {
+      return;
+    }
+    _hasScheduledResumableValue = true;
+    _scheduledResumableMatchId = matchId;
+    _queueResumableStoreOperation(() => _resumableMatchStore.save(matchId));
+  }
+
+  void _clearResumableMatch() {
+    if (_hasScheduledResumableValue && _scheduledResumableMatchId == null) {
+      return;
+    }
+    _hasScheduledResumableValue = true;
+    _scheduledResumableMatchId = null;
+    _queueResumableStoreOperation(_resumableMatchStore.clear);
+  }
+
+  void _queueResumableStoreOperation(Future<void> Function() operation) {
+    _resumableStoreOperation = _resumableStoreOperation
+        .catchError((Object _) {})
+        .then((_) => operation())
+        .catchError((Object error) {
+          debugPrint('Could not update resumable match storage: $error');
+        });
+    unawaited(_resumableStoreOperation);
   }
 
   void _handleResultPresentationStarted() {
@@ -828,7 +875,7 @@ class GameSessionController extends ChangeNotifier {
       return const PlayExitResult.matchFinished();
     }
 
-    if (matchId != null && gameState?.status == GameMatchStatus.active) {
+    if (matchId != null && gameState?.status != GameMatchStatus.finished) {
       return PlayExitResult.disconnectedFromMatch(matchId);
     }
 

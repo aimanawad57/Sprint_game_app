@@ -71,4 +71,7 @@ type SprintMatchState = {
   createdAtMs: number;
   lastActivityAtMs: number;
   finishedEmptySinceMs: number | null;
+  // True while per-player recovery pointers project this live match. The
+  // projection is retried on later ticks when storage is temporarily down.
+  resumablePointersPublished: boolean;
 };

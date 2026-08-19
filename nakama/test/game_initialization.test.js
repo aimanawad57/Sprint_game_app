@@ -48,12 +48,17 @@ function loadRuntimeForTest() {
     "writeSprintWinsLeaderboardRecord," +
     "rpcGetWinsLeaderboard," +
     "rpcGetOrCreateProfile," +
+    "publishResumableMatchPointers," +
+    "clearResumableMatchPointers," +
+    "synchronizeResumableMatchPointers," +
+    "rpcGetResumableMatch," +
     "rpcGetOnboardingProgress," +
     "rpcMergeOnboardingProgress," +
     "sprintMatchJoinAttempt," +
     "sprintMatchJoin," +
     "sprintMatchLeave," +
     "sprintMatchLoop," +
+    "sprintMatchSignal," +
     "MatchStatus," +
     "MatchEndReason," +
     "CardColor," +
@@ -2993,6 +2998,164 @@ test("get_or_create_profile requires an authenticated user", () => {
     () => runtime.rpcGetOrCreateProfile({}, {info() {}}, {}, ""),
     /session is required/
   );
+});
+
+test("resumable match RPC returns only a live match containing the player", () => {
+  let signaled;
+  const nk = {
+    storageRead() {
+      return [{
+        collection: "sprint_active_match",
+        key: "current",
+        userId: "player-a",
+        version: "v1",
+        value: {matchId: "match-1", updatedAtMs: 123}
+      }];
+    },
+    matchGet(matchId) {
+      assert.equal(matchId, "match-1");
+      return {matchId, authoritative: true, size: 1, label: ""};
+    },
+    matchSignal(matchId, data) {
+      signaled = {matchId, data: JSON.parse(data)};
+      return JSON.stringify({resumable: true});
+    }
+  };
+
+  const result = JSON.parse(runtime.rpcGetResumableMatch(
+    {userId: "player-a"}, {warn() {}}, nk, ""
+  ));
+
+  assert.deepEqual(result, {matchId: "match-1"});
+  assert.deepEqual(normalize(signaled), {
+    matchId: "match-1",
+    data: {type: "resumable_match_lookup", userId: "player-a"}
+  });
+});
+
+test("resumable match RPC removes a pointer when its match no longer exists", () => {
+  const deletes = [];
+  const pointer = {
+    collection: "sprint_active_match",
+    key: "current",
+    userId: "player-a",
+    version: "v1",
+    value: {matchId: "gone-match", updatedAtMs: 123}
+  };
+  const nk = {
+    storageRead() { return [pointer]; },
+    matchGet() { return null; },
+    storageDelete(requests) { deletes.push(...requests); }
+  };
+
+  const result = JSON.parse(runtime.rpcGetResumableMatch(
+    {userId: "player-a"}, {warn() {}}, nk, ""
+  ));
+
+  assert.deepEqual(result, {matchId: null});
+  assert.deepEqual(normalize(deletes), [{
+    collection: "sprint_active_match",
+    key: "current",
+    userId: "player-a",
+    version: "v1"
+  }]);
+});
+
+test("clearing an old match pointer never deletes a newer replacement", () => {
+  let deleted = false;
+  const nk = {
+    storageRead() {
+      return [{
+        collection: "sprint_active_match",
+        key: "current",
+        userId: "player-a",
+        version: "v2",
+        value: {matchId: "new-match", updatedAtMs: 456}
+      }];
+    },
+    storageDelete() { deleted = true; }
+  };
+
+  runtime.clearResumableMatchPointers(nk, "old-match", ["player-a"]);
+  assert.equal(deleted, false);
+});
+
+test("match lifecycle publishes and clears both player recovery pointers", () => {
+  const state = runtime.createWaitingMatchState(["player-a", "player-b"], 100);
+  const stored = new Map();
+  const writes = [];
+  const deletes = [];
+  const nk = {
+    storageWrite(requests) {
+      requests.forEach((request) => {
+        writes.push(request);
+        stored.set(request.userId, {
+          ...request,
+          version: "pointer-version"
+        });
+      });
+    },
+    storageRead(requests) {
+      return requests
+        .map((request) => stored.get(request.userId))
+        .filter(Boolean);
+    },
+    storageDelete(requests) {
+      deletes.push(...requests);
+      requests.forEach((request) => stored.delete(request.userId));
+    }
+  };
+  const logger = {warn() {}};
+
+  runtime.synchronizeResumableMatchPointers(
+    {matchId: "match-1"}, nk, state, logger
+  );
+  assert.equal(state.resumablePointersPublished, true);
+  assert.deepEqual(writes.map((write) => write.userId).sort(), [
+    "player-a",
+    "player-b"
+  ]);
+
+  state.status = runtime.MatchStatus.Finished;
+  runtime.synchronizeResumableMatchPointers(
+    {matchId: "match-1"}, nk, state, logger
+  );
+  assert.equal(state.resumablePointersPublished, false);
+  assert.deepEqual(deletes.map((request) => request.userId).sort(), [
+    "player-a",
+    "player-b"
+  ]);
+});
+
+test("resumable match RPC requires authentication", () => {
+  assert.throws(
+    () => runtime.rpcGetResumableMatch({}, {warn() {}}, {}, ""),
+    /session is required/
+  );
+});
+
+test("match signal allows resume only for assigned players before finish", () => {
+  const state = createInitializedState(runtime);
+  const request = JSON.stringify({
+    type: "resumable_match_lookup",
+    userId: "player-a"
+  });
+  const allowed = runtime.sprintMatchSignal(
+    {}, {warn() {}}, {}, {}, 1, state, request
+  );
+  assert.deepEqual(JSON.parse(allowed.data), {resumable: true});
+
+  const outsider = runtime.sprintMatchSignal(
+    {}, {warn() {}}, {}, {}, 1, state,
+    JSON.stringify({type: "resumable_match_lookup", userId: "outsider"})
+  );
+  assert.deepEqual(JSON.parse(outsider.data), {resumable: false});
+
+  state.status = runtime.MatchStatus.Finished;
+  const finished = runtime.sprintMatchSignal(
+    {}, {warn() {}}, {}, {}, 1, state, request
+  );
+  assert.deepEqual(JSON.parse(finished.data), {resumable: false});
 });
 
 test("game-ended view is sent before statistics persist on the following tick", () => {

@@ -156,7 +156,8 @@ function createWaitingMatchState(
     nextTieBreakerPlayerId: playerAId,
     createdAtMs: nowMs,
     lastActivityAtMs: nowMs,
-    finishedEmptySinceMs: null
+    finishedEmptySinceMs: null,
+    resumablePointersPublished: false
   };
 }
 
@@ -213,7 +214,8 @@ function createOpenWaitingMatchState(
     nextTieBreakerPlayerId: creatorId,
     createdAtMs: nowMs,
     lastActivityAtMs: nowMs,
-    finishedEmptySinceMs: null
+    finishedEmptySinceMs: null,
+    resumablePointersPublished: false
   };
 }
 
@@ -980,6 +982,9 @@ function sprintMatchJoin(
         lastStateSentAtMs: null
       };
       state.rematchResponses[presence.userId] = "pending";
+      // The previous projection only contained the creator. Republish both
+      // assigned players on the next match tick.
+      state.resumablePointersPublished = false;
       logger.info("Sprint match code redeemed by user: %s", presence.userId);
     }
 
@@ -1158,6 +1163,8 @@ function sprintMatchLoop(
   messages: nkruntime.MatchMessage[]
 ): {state: SprintMatchState} | null {
   const nowMs = Date.now();
+
+  synchronizeResumableMatchPointers(ctx, nk, state, logger);
 
   if (state.resultPersistencePending && !state.resultPersisted) {
     try {
@@ -1355,7 +1362,20 @@ function sprintMatchLoop(
   }
 
   const finalCleanupDecision = shouldTerminateSprintMatch(state, nowMs);
+  synchronizeResumableMatchPointers(ctx, nk, state, logger);
   if (finalCleanupDecision.terminate) {
+    if (ctx && ctx.matchId && nk) {
+      try {
+        clearResumableMatchPointers(
+          nk,
+          ctx.matchId,
+          assignedSprintPlayerIds(state)
+        );
+        state.resumablePointersPublished = false;
+      } catch (error) {
+        logger.warn("Could not clear terminating match pointers: %s", error);
+      }
+    }
     invalidateMatchCode(nk, logger, state);
     logger.info(
       "Terminating sprint match: %s, status %s, connected players %d",
@@ -1378,6 +1398,18 @@ function sprintMatchTerminate(
   state: SprintMatchState,
   graceSeconds: number
 ): {state: SprintMatchState} {
+  if (ctx.matchId) {
+    try {
+      clearResumableMatchPointers(
+        nk,
+        ctx.matchId,
+        assignedSprintPlayerIds(state)
+      );
+      state.resumablePointersPublished = false;
+    } catch (error) {
+      logger.warn("Could not clear terminated match pointers: %s", error);
+    }
+  }
   invalidateMatchCode(nk, logger, state);
   return {state: state};
 }
@@ -1391,6 +1423,22 @@ function sprintMatchSignal(
   state: SprintMatchState,
   data: string
 ): {state: SprintMatchState; data?: string} {
+  try {
+    const request = JSON.parse(data || "{}");
+    if (request.type === "resumable_match_lookup") {
+      const belongsToMatch =
+        typeof request.userId === "string" &&
+        state.playerOrder.indexOf(request.userId) !== -1;
+      return {
+        state: state,
+        data: JSON.stringify({
+          resumable: belongsToMatch && state.status !== MatchStatus.Finished
+        })
+      };
+    }
+  } catch (error) {
+    // Unknown or malformed signals retain the existing generic response.
+  }
   return {
     state: state,
     data: JSON.stringify({ok: true})
