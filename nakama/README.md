@@ -16,8 +16,13 @@ For physical phones, use the Windows machine LAN IP.
 
 ```powershell
 cd nakama
-docker compose up
+Copy-Item .env.example .env
+docker compose up -d --build
 ```
+
+Copying `.env.example` is optional because Compose has matching development
+defaults. Use `.env` to change local ports or database credentials without
+editing tracked files.
 
 Rebuild the runtime image after TypeScript changes:
 

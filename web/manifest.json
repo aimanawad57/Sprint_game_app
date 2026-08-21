@@ -1,11 +1,11 @@
 {
-    "name": "sprint_app",
-    "short_name": "sprint_app",
+    "name": "Sprint",
+    "short_name": "Sprint",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F3F2FF",
+    "theme_color": "#2C3192",
+    "description": "A real-time two-player speed card game.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

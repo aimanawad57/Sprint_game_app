@@ -11,6 +11,11 @@ import '../models/leaderboard_entry.dart';
 import '../models/onboarding_progress.dart';
 import '../models/player_profile.dart';
 
+/// Owns the Nakama HTTP client and the single reusable realtime socket.
+///
+/// UI and session code use this boundary for authentication, RPCs,
+/// matchmaking, and match transport. Authoritative game rules remain in the
+/// Nakama runtime; this client only decodes player-visible server state.
 class NakamaService {
   NakamaService()
     : client = nakama.getNakamaClient(

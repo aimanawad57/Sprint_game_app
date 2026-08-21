@@ -3,15 +3,15 @@ services:
     image: postgres:12.2-alpine
     command: postgres -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all
     environment:
-      POSTGRES_DB: nakama
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: localdb
+      POSTGRES_DB: ${POSTGRES_DB:-nakama}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdb}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d nakama"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-nakama}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,12 +25,12 @@ services:
       - "/bin/sh"
       - "-ecx"
       - >
-        /nakama/nakama migrate up --database.address postgres:localdb@postgres:5432/nakama &&
-        exec /nakama/nakama --config /nakama/data/local.yml --database.address postgres:localdb@postgres:5432/nakama
+        /nakama/nakama migrate up --database.address ${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-localdb}@postgres:5432/${POSTGRES_DB:-nakama} &&
+        exec /nakama/nakama --config /nakama/data/local.yml --database.address ${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-localdb}@postgres:5432/${POSTGRES_DB:-nakama}
     ports:
-      - "7349:7349"
-      - "7350:7350"
-      - "7351:7351"
+      - "${NAKAMA_GRPC_PORT:-7349}:7349"
+      - "${NAKAMA_API_PORT:-7350}:7350"
+      - "${NAKAMA_CONSOLE_PORT:-7351}:7351"
     healthcheck:
       test: ["CMD", "/nakama/nakama", "healthcheck"]
       interval: 10s
@@ -40,4 +40,3 @@ services:
 
 volumes:
   postgres_data:
-
