@@ -85,16 +85,18 @@ check, rebuild the service with `docker compose up -d --build nakama`.
 | `lib/practice/` | Offline practice state and bot logic |
 | `lib/widgets/` | Reusable UI and match presentation |
 | `nakama/src/` | Authoritative TypeScript runtime, RPCs, and match handlers |
-| `docs/` | Architecture, development, deployment, and protocol documentation |
+| `docs/` | User, developer, architecture, and protocol documentation |
 | `test/`, `nakama/test/` | Flutter and backend regression suites |
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [User manual](docs/user_manual.md)
+- [Developer guide](docs/dev_guide.md)
 - [Architecture](docs/architecture.md)
 - [Backend guide](nakama/README.md)
 - [Realtime game contract](docs/game-contract/README.md)
 
 Local defaults such as `defaultkey`, development database credentials, and
 example application identifiers are intentionally convenient for development.
-Complete the release checklist before exposing a build publicly.
+Replace them with production values before exposing a build publicly.
